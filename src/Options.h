@@ -74,6 +74,7 @@ Copyright 2014-2025 ClassiCube | Licensed under BSD-3
 #define OPT_MAX_CHUNK_UPDATES "gfx-maxchunkupdates"
 #define OPT_OPAQUE_NO_ALPHATEST "gfx-opaquenoalphatest"
 #define OPT_DRAW_MERGE_GAP "gfx-drawmergegap"
+#define OPT_FAST_CHUNK_DRAW "gfx-fastchunkdraw"
 #define OPT_CAMERA_MASS "cameramass"
 #define OPT_CAMERA_SMOOTH "camera-smooth"
 #define OPT_GRAB_CURSOR "win-grab-cursor"

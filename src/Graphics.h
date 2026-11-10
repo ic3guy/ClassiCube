@@ -349,7 +349,7 @@ CC_API void  Gfx_UnlockVb(GfxResourceID vb);
 /* Special case of Gfx_Create/LockVb for building chunks in Builder.c */
 GfxResourceID Gfx_CreateVb2(void* vertices, VertexFormat fmt, int count);
 #endif
-#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL2 || CC_GFX_BACKEND == CC_GFX_BACKEND_GL1
 /* Special case Gfx_BindVb for use with Gfx_DrawIndexedTris_T2fC4b */
 void Gfx_BindVb_Textured(GfxResourceID vb);
 #else

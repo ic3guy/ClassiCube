@@ -79,6 +79,13 @@ typedef void (*GL_SetupVBRangeFunc)(int startVertex);
 static GL_SetupVBFunc gfx_setupVBFunc;
 static GL_SetupVBRangeFunc gfx_setupVBRangeFunc;
 
+/* Whether map chunks are drawn by setting up the vertex pointers only once per chunk, */
+/*  and then drawing each part of the chunk by starting from a different place in the index buffer. */
+/* Otherwise the vertex pointers are set up again before every single draw call, which is */
+/*  slower as it means 4 instead of 1 OpenGL calls (and more driver work) per draw call. */
+/* NOTE: Can't be used with the OpenGL 1.0/1.1 fallbacks, as they don't support index buffer offsets */
+static cc_bool gl_fastChunkDraw;
+
 #include "_GLShared.h"
 static void GLBackend_Init(void);
 
@@ -91,6 +98,9 @@ void Gfx_Create(void) {
 	customMipmapsLevels = true;
 #endif
 	Gfx.BackendType     = CC_GFX_BACKEND_GL1;
+#ifndef CC_BUILD_GL11_FALLBACK
+	gl_fastChunkDraw    = Options_GetBool(OPT_FAST_CHUNK_DRAW, true);
+#endif
 
 	GL_InitCommon();
 	GLBackend_Init();
@@ -289,12 +299,28 @@ void Gfx_DrawVb_IndexedTris(int verticesCount) {
 	_glDrawElements(GL_TRIANGLES, ICOUNT(verticesCount), GL_UNSIGNED_SHORT, IB_PTR);
 }
 
+void Gfx_BindVb_Textured(GfxResourceID vb) {
+	Gfx_BindVb(vb);
+	if (gl_fastChunkDraw) GL_SetupVbTextured();
+}
+
 void Gfx_DrawIndexedTris_T2fC4b(int verticesCount, int startVertex, DrawHints hints) {
-	cc_uint32 offset = startVertex * SIZEOF_VERTEX_TEXTURED;
+	cc_uint32 offset;
+
+	if (gl_fastChunkDraw && (startVertex + verticesCount) <= GFX_MAX_VERTICES) {
+		/* 4 vertices = 6 indices of 2 bytes each, so offset in bytes = startVertex * 3 */
+		_glDrawElements(GL_TRIANGLES, ICOUNT(verticesCount), GL_UNSIGNED_SHORT, uint_to_ptr(startVertex * 3));
+		return;
+	}
+
+	offset = startVertex * SIZEOF_VERTEX_TEXTURED;
 	_glVertexPointer(3, GL_FLOAT,        SIZEOF_VERTEX_TEXTURED, (GLpointer)(VB_PTR + offset +  0));
 	_glColorPointer(4, GL_UNSIGNED_BYTE, SIZEOF_VERTEX_TEXTURED, (GLpointer)(VB_PTR + offset + 12));
 	_glTexCoordPointer(2, GL_FLOAT,      SIZEOF_VERTEX_TEXTURED, (GLpointer)(VB_PTR + offset + 16));
 	_glDrawElements(GL_TRIANGLES,        ICOUNT(verticesCount),  GL_UNSIGNED_SHORT, IB_PTR);
+
+	/* Later draw calls for this chunk expect the vertex pointers to be at the start of the chunk */
+	if (gl_fastChunkDraw) GL_SetupVbTextured();
 }
 
 
