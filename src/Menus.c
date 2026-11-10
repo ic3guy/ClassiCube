@@ -593,12 +593,14 @@ void PauseScreen_Show(void) {
 /*########################################################################################################################*
 *----------------------------------------------------ClassicPauseScreen---------------------------------------------------*
 *#########################################################################################################################*/
-static struct Widget* classicPause_widgets[1 + 5 + 1];
+static struct Widget* classicPause_widgets[1 + 5 + 2];
 
 static void ClassicPauseScreen_ContextRecreated(void* screen) {
 	struct PauseScreen* s = (struct PauseScreen*)screen;
 	struct FontDesc titleFont;
 	PauseScreenBase_ContextRecreated(s, &titleFont);
+
+	ButtonWidget_SetConst(&s->quit, "Quit game", &titleFont);
 	Font_Free(&titleFont);
 }
 
@@ -606,6 +608,7 @@ static void ClassicPauseScreen_Layout(void* screen) {
 	struct PauseScreen* s = (struct PauseScreen*)screen;
 	Menu_LayoutButtons(s->btns, s->descs, s->descsCount);
 	Widget_SetLocation(&s->back,  ANCHOR_CENTRE, ANCHOR_MAX, 0, Game_ClassicMode ? 80 : 25);
+	Widget_SetLocation(&s->quit,  ANCHOR_MAX,    ANCHOR_MAX, 5,  5);
 	Widget_SetLocation(&s->title, ANCHOR_CENTRE, ANCHOR_CENTRE, 0, -150);
 }
 
@@ -626,6 +629,8 @@ static void ClassicPauseScreen_Init(void* screen) {
 	/* Don't show nostalgia options in classic mode */
 	s->descsCount = Game_ClassicMode ? 4 : 5;
 	PauseScreenBase_AddWidgets(s, 400);
+	/* Same quit button as the non classic pause menu (otherwise only Alt+F4 quits) */
+	ButtonWidget_Add(s, &s->quit, 120, PauseScreenBase_Quit);
 	s->maxVertices = Screen_CalcDefaultMaxVertices(s);
 
 	if (Server.IsSinglePlayer) return;

@@ -888,6 +888,9 @@ void Game_Setup(void) {
 	Game.CurrentState = 0;
 
 	Game_Load();
+	/* Optionally start the game in fullscreen (same as pressing the fullscreen key) */
+	if (Options_GetBool(OPT_WINDOW_FULLSCREEN, false)) Game_ToggleFullscreen();
+
 	Event_RaiseVoid(&WindowEvents.Resized);
 	frameStart = Stopwatch_Measure();
 }

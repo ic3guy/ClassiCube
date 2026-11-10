@@ -140,6 +140,11 @@ static void SPConnection_BeginConnect(void) {
 #else
 	horSize = Game_ClassicMode ? 256 : 128;
 	verSize = 64;
+	/* Optionally override the width and length of the generated world */
+	/*  (e.g. so classic mode can default to a small world on slow devices) */
+	horSize = Options_GetInt(OPT_SP_WORLD_SIZE, 16, 1024, horSize);
+	/* Chunks are 16 blocks wide, so keep the world size a multiple of that */
+	horSize &= ~15;
 #endif
 
 #if defined CC_BUILD_N64 || defined CC_BUILD_NDS || defined CC_BUILD_PS1 || defined CC_BUILD_SATURN || defined CC_BUILD_TINYMEM

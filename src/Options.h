@@ -30,6 +30,8 @@ Copyright 2014-2025 ClassiCube | Licensed under BSD-3
 #define OPT_CHAT_LOGGING "chat-logging"
 #define OPT_WINDOW_WIDTH "window-width"
 #define OPT_WINDOW_HEIGHT "window-height"
+#define OPT_WINDOW_FULLSCREEN "window-fullscreen"
+#define OPT_SP_WORLD_SIZE "sp-worldsize"
 #define OPT_AUTO_PAUSE "auto-pause"
 
 #define OPT_HACKS_ENABLED "hacks-hacksenabled"
