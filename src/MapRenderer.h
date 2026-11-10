@@ -19,6 +19,9 @@ extern int MapRenderer_1DUsedCount;
 with parts for 'normal' buffer being in lower half. */
 extern struct ChunkPartInfo* MapRenderer_PartsNormal; /* TODO: THAT DESC SUCKS */
 extern struct ChunkPartInfo* MapRenderer_PartsTranslucent;
+/* Parts for blocks that need alpha testing (e.g. leaves, glass, sprites) */
+/* NOTE: MapRenderer_PartsNormal therefore only has parts for fully opaque blocks */
+extern struct ChunkPartInfo* MapRenderer_PartsCutout;
 
 /* Describes a portion of the data needed for rendering a chunk. */
 struct ChunkPartInfo {
@@ -60,6 +63,7 @@ struct ChunkInfo {
 #endif
 	struct ChunkPartInfo* normalParts;
 	struct ChunkPartInfo* translucentParts;
+	struct ChunkPartInfo* cutoutParts;
 };
 
 /* Renders the meshes of non-translucent blocks in visible chunks. */

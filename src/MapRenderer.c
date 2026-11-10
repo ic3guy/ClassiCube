@@ -18,18 +18,25 @@
 int MapRenderer_1DUsedCount;
 struct ChunkPartInfo* MapRenderer_PartsNormal;
 struct ChunkPartInfo* MapRenderer_PartsTranslucent;
+struct ChunkPartInfo* MapRenderer_PartsCutout;
 
 static cc_bool inTranslucent;
 static IVec3 chunkPos;
 
-/* The number of non-empty Normal/Translucent ChunkPartInfos (across entire world) for each 1D atlas batch. */
+/* Whether fully opaque blocks are drawn without alpha testing */
+/* (alpha testing is expensive on some GPUs, as it prevents early depth testing) */
+static cc_bool opaqueNoAlphaTest;
+/* Maximum number of unwanted vertices that can be drawn, in order to combine two draw calls into one */
+static int mergeGap;
+
+/* The number of non-empty Normal/Translucent/Cutout ChunkPartInfos (across entire world) for each 1D atlas batch. */
 /* 1D atlas batches that do not have any ChunkPartInfos can be entirely skipped. */
-static int normPartsCount[ATLAS1D_MAX_ATLASES], tranPartsCount[ATLAS1D_MAX_ATLASES];
-/* Whether there are any visible Normal/Translucent ChunkPartInfos for each 1D atlas batch. */
+static int normPartsCount[ATLAS1D_MAX_ATLASES], tranPartsCount[ATLAS1D_MAX_ATLASES], cutPartsCount[ATLAS1D_MAX_ATLASES];
+/* Whether there are any visible Normal/Translucent/Cutout ChunkPartInfos for each 1D atlas batch. */
 /* 1D atlas batches that do not have any visible ChunkPartInfos can be skipped. */
-static cc_bool hasNormParts[ATLAS1D_MAX_ATLASES], hasTranParts[ATLAS1D_MAX_ATLASES];
-/* Whether renderer should check if there are any visible Normal/Translucent ChunkPartInfos for each 1D atlas batch. */
-static cc_bool checkNormParts[ATLAS1D_MAX_ATLASES], checkTranParts[ATLAS1D_MAX_ATLASES];
+static cc_bool hasNormParts[ATLAS1D_MAX_ATLASES], hasTranParts[ATLAS1D_MAX_ATLASES], hasCutParts[ATLAS1D_MAX_ATLASES];
+/* Whether renderer should check if there are any visible Normal/Translucent/Cutout ChunkPartInfos for each 1D atlas batch. */
+static cc_bool checkNormParts[ATLAS1D_MAX_ATLASES], checkTranParts[ATLAS1D_MAX_ATLASES], checkCutParts[ATLAS1D_MAX_ATLASES];
 
 /* Render info for all chunks in the world. Unsorted. */
 static struct ChunkInfo* mapChunks;
@@ -66,6 +73,7 @@ static void ChunkInfo_Init(struct ChunkInfo* chunk, int x, int y, int z) {
 
 	chunk->normalParts      = NULL;
 	chunk->translucentParts = NULL;
+	chunk->cutoutParts      = NULL;
 }
 
 static CC_INLINE void ChunkInfo_Refresh(struct ChunkInfo* chunk) {
@@ -116,10 +124,6 @@ static void CheckWeather(float delta) {
 #if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
 	#define DrawFace(face, ign)    Gfx_BindVb(part.vbs[face]); DrawBatch(0, 0);
 	#define DrawFaces(f1, f2, ign) DrawFace(f1, ign); DrawFace(f2, ign);
-#else
-	#define DrawFace(face, offset)    DrawBatch(part.counts[face], offset);
-	#define DrawFaces(f1, f2, offset) DrawBatch(part.counts[f1] + part.counts[f2], offset);
-#endif
 
 #define DrawNormalFaces(minFace, maxFace) \
 if (drawMin && drawMax) { \
@@ -135,25 +139,92 @@ if (drawMin && drawMax) { \
 	Game_Vertices += part.counts[maxFace]; \
 }
 
-static void RenderNormalBatch(int batch) {
+#define DrawTranslucentFaces(minFace, maxFace) \
+if (drawMin && drawMax) { \
+	DrawFaces(minFace, maxFace, offset); \
+	Game_Vertices += (part.counts[minFace] + part.counts[maxFace]); \
+} else if (drawMin) { \
+	DrawFace(minFace, offset); \
+	Game_Vertices += part.counts[minFace]; \
+} else if (drawMax) { \
+	DrawFace(maxFace, offset + part.counts[minFace]); \
+	Game_Vertices += part.counts[maxFace]; \
+}
+#else
+/* Bit in the 'wanted' mask of DrawPartSections for the sprites of a chunk part */
+#define SECTION_SPRITES 1
+/* Bit in the 'wanted' mask of DrawPartSections for the given face of a chunk part */
+#define SECTION_FACE(face) (2 << (face))
+
+/* Draws the wanted sections of the given chunk part, using as few draw calls as possible. */
+/* The vertices of a chunk part are stored as sprites first, then each of the six faces in order. */
+/*  Therefore wanted sections that are next to each other can be drawn using just one draw call. */
+/* Two wanted sections that are separated by at most 'maxGap' unwanted vertices are also drawn using */
+/*  one draw call. Unwanted sections always face away from the camera, so when maxGap is more */
+/*  than 0 then face culling MUST be enabled, so the GPU skips over the unwanted sections. */
+static void DrawPartSections(struct ChunkInfo* info, const struct ChunkPartInfo* part, int wanted, int maxGap) {
+	int offset = part->offset;
+	int runBeg = 0, runLen = 0, gap = 0;
+	int i, count;
+
+	for (i = 0; i <= FACE_COUNT; i++, offset += count)
+	{
+		count = i == 0 ? part->spriteCount : part->counts[i - 1];
+		if (!count) continue;
+		if (!(wanted & (1 << i))) { gap += count; continue; }
+
+		if (runLen && gap <= maxGap && (runLen + gap + count) <= GFX_MAX_VERTICES) {
+			/* Close enough to the previous wanted section to share its draw call */
+			runLen += gap + count;
+		} else {
+			if (runLen) { DrawBatch(runLen, runBeg); Game_Vertices += runLen; }
+			runBeg = offset;
+			runLen = count;
+		}
+		gap = 0;
+	}
+	if (runLen) { DrawBatch(runLen, runBeg); Game_Vertices += runLen; }
+}
+#endif
+
+/* Renders either the opaque parts or the cutout parts of all visible chunks in the given 1D atlas batch */
+static void RenderNormalBatch(int batch, cc_bool cutout) {
 	int batchOffset = chunksCount * batch;
 	struct ChunkInfo* info;
+	struct ChunkPartInfo* parts;
 	struct ChunkPartInfo part;
+	cc_bool* hasParts = cutout ? hasCutParts : hasNormParts;
+	int i;
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
 	cc_bool drawMin, drawMax;
-	int i, offset, count;
+	int offset, count;
+#else
+	int wanted;
+#endif
 
 	for (i = 0; i < renderChunksCount; i++) {
-		info = renderChunks[i];
-		if (!info->normalParts) continue;
+		info  = renderChunks[i];
+		parts = cutout ? info->cutoutParts : info->normalParts;
+		if (!parts) continue;
 
-		part = info->normalParts[batchOffset];
+		part = parts[batchOffset];
 		if (part.offset < 0) continue;
-		hasNormParts[batch] = true;
+		hasParts[batch] = true;
 
 #if CC_GFX_BACKEND != CC_GFX_BACKEND_GL11
 		Gfx_BindVb_Textured(info->vb);
-#endif
 
+		/* NOTE: Face culling is on, so drawing all the sprites at once is fine */
+		wanted = SECTION_SPRITES;
+		if (info->drawXMin) wanted |= SECTION_FACE(FACE_XMIN);
+		if (info->drawXMax) wanted |= SECTION_FACE(FACE_XMAX);
+		if (info->drawZMin) wanted |= SECTION_FACE(FACE_ZMIN);
+		if (info->drawZMax) wanted |= SECTION_FACE(FACE_ZMAX);
+		if (info->drawYMin) wanted |= SECTION_FACE(FACE_YMIN);
+		if (info->drawYMax) wanted |= SECTION_FACE(FACE_YMAX);
+
+		DrawPartSections(info, &part, wanted, mergeGap);
+#else
 		offset  = part.offset + part.spriteCount;
 		drawMin = info->drawXMin && part.counts[FACE_XMIN];
 		drawMax = info->drawXMax && part.counts[FACE_XMAX];
@@ -170,34 +241,14 @@ static void RenderNormalBatch(int batch) {
 		DrawNormalFaces(FACE_YMIN, FACE_YMAX);
 
 		if (!part.spriteCount) continue;
-		offset = part.offset;
-		count  = part.spriteCount >> 2; /* 4 per sprite */
+		count = part.spriteCount >> 2; /* 4 per sprite */
 
 		Gfx_SetFaceCulling(true);
-		/* TODO: fix to not render them all */
-#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
 		Gfx_BindVb(part.vbs[FACE_COUNT]);
 		DrawBatch(0, 0);
 		Game_Vertices += count * 4;
 		Gfx_SetFaceCulling(false);
-		continue;
 #endif
-		if (info->drawXMax || info->drawZMin) {
-			DrawBatch(count, offset); Game_Vertices += count;
-		} offset += count;
-
-		if (info->drawXMin || info->drawZMax) {
-			DrawBatch(count, offset); Game_Vertices += count;
-		} offset += count;
-
-		if (info->drawXMin || info->drawZMin) {
-			DrawBatch(count, offset); Game_Vertices += count;
-		} offset += count;
-
-		if (info->drawXMax || info->drawZMax) {
-			DrawBatch(count, offset); Game_Vertices += count;
-		}
-		Gfx_SetFaceCulling(false);
 	}
 }
 
@@ -206,18 +257,41 @@ void MapRenderer_RenderNormal(float delta) {
 	if (!mapChunks) return;
 
 	Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
-	Gfx_SetAlphaTest(true);
-	
 	Gfx_EnableMipmaps();
-	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++) 
+#if CC_GFX_BACKEND != CC_GFX_BACKEND_GL11
+	/* Faces that point away from the camera are never visible in these passes */
+	/* (also required by DrawPartSections when merging draw calls) */
+	Gfx_SetFaceCulling(true);
+#endif
+
+	/* Fully opaque blocks first, as they do not need alpha testing */
+	/*  (chunks are sorted nearest first, so the GPU can then skip most hidden pixels) */
+	Gfx_SetAlphaTest(!opaqueNoAlphaTest);
+	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++)
 	{
 		if (normPartsCount[batch] <= 0) continue;
 		if (hasNormParts[batch] || checkNormParts[batch]) {
 			Atlas1D_Bind(batch);
-			RenderNormalBatch(batch);
+			RenderNormalBatch(batch, false);
 			checkNormParts[batch] = false;
 		}
 	}
+
+	/* Then blocks that do need alpha testing (e.g. leaves, glass, sprites) */
+	Gfx_SetAlphaTest(true);
+	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++)
+	{
+		if (cutPartsCount[batch] <= 0) continue;
+		if (hasCutParts[batch] || checkCutParts[batch]) {
+			Atlas1D_Bind(batch);
+			RenderNormalBatch(batch, true);
+			checkCutParts[batch] = false;
+		}
+	}
+
+#if CC_GFX_BACKEND != CC_GFX_BACKEND_GL11
+	Gfx_SetFaceCulling(false);
+#endif
 	Gfx_DisableMipmaps();
 
 	CheckWeather(delta);
@@ -227,24 +301,17 @@ void MapRenderer_RenderNormal(float delta) {
 #endif
 }
 
-#define DrawTranslucentFaces(minFace, maxFace) \
-if (drawMin && drawMax) { \
-	DrawFaces(minFace, maxFace, offset); \
-	Game_Vertices += (part.counts[minFace] + part.counts[maxFace]); \
-} else if (drawMin) { \
-	DrawFace(minFace, offset); \
-	Game_Vertices += part.counts[minFace]; \
-} else if (drawMax) { \
-	DrawFace(maxFace, offset + part.counts[minFace]); \
-	Game_Vertices += part.counts[maxFace]; \
-}
-
 static void RenderTranslucentBatch(int batch) {
 	int batchOffset = chunksCount * batch;
 	struct ChunkInfo* info;
 	struct ChunkPartInfo part;
+	int i;
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
 	cc_bool drawMin, drawMax;
-	int i, offset;
+	int offset;
+#else
+	int wanted;
+#endif
 
 	for (i = 0; i < renderChunksCount; i++) {
 		info = renderChunks[i];
@@ -256,8 +323,18 @@ static void RenderTranslucentBatch(int batch) {
 
 #if CC_GFX_BACKEND != CC_GFX_BACKEND_GL11
 		Gfx_BindVb_Textured(info->vb);
-#endif
 
+		wanted = 0;
+		if (inTranslucent || info->drawXMin) wanted |= SECTION_FACE(FACE_XMIN);
+		if (inTranslucent || info->drawXMax) wanted |= SECTION_FACE(FACE_XMAX);
+		if (inTranslucent || info->drawZMin) wanted |= SECTION_FACE(FACE_ZMIN);
+		if (inTranslucent || info->drawZMax) wanted |= SECTION_FACE(FACE_ZMAX);
+		if (inTranslucent || info->drawYMin) wanted |= SECTION_FACE(FACE_YMIN);
+		if (inTranslucent || info->drawYMax) wanted |= SECTION_FACE(FACE_YMAX);
+
+		/* Face culling is off for translucent blocks, so cannot draw any unwanted sections */
+		DrawPartSections(info, &part, wanted, 0);
+#else
 		offset  = part.offset;
 		drawMin = (inTranslucent || info->drawXMin) && part.counts[FACE_XMIN];
 		drawMax = (inTranslucent || info->drawXMax) && part.counts[FACE_XMAX];
@@ -272,6 +349,7 @@ static void RenderTranslucentBatch(int batch) {
 		drawMin = (inTranslucent || info->drawYMin) && part.counts[FACE_YMIN];
 		drawMax = (inTranslucent || info->drawYMax) && part.counts[FACE_YMAX];
 		DrawTranslucentFaces(FACE_YMIN, FACE_YMAX);
+#endif
 	}
 }
 
@@ -368,6 +446,18 @@ static void DeleteChunk(struct ChunkInfo* chunk) {
 		}
 		chunk->translucentParts = NULL;
 	}
+
+	if (chunk->cutoutParts) {
+		ptr = chunk->cutoutParts;
+		for (i = 0; i < MapRenderer_1DUsedCount; i++, ptr += chunksCount) {
+			if (ptr->offset < 0) continue;
+			cutPartsCount[i]--;
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
+			for (j = 0; j < CHUNKPART_MAX_VBS; j++) Gfx_DeleteVb(&ptr->vbs[j]);
+#endif
+		}
+		chunk->cutoutParts = NULL;
+	}
 }
 
 /* Builds the mesh (hence vertex buffer) for the given chunk, and updates internal state */
@@ -380,7 +470,7 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
 	if (!Builder_MakeChunk(chunk)) return;
 
 	chunk->dirty  = false;
-	chunk->noData = !chunk->normalParts && !chunk->translucentParts;
+	chunk->noData = !chunk->normalParts && !chunk->translucentParts && !chunk->cutoutParts;
 	chunk->empty  = chunk->noData;
 	if (chunk->empty) return;
 	
@@ -397,6 +487,13 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
 			if (ptr->offset >= 0) tranPartsCount[i]++;
 		}
 	}
+
+	if (chunk->cutoutParts) {
+		ptr = chunk->cutoutParts;
+		for (i = 0; i < MapRenderer_1DUsedCount; i++, ptr += chunksCount) {
+			if (ptr->offset >= 0) cutPartsCount[i]++;
+		}
+	}
 }
 
 
@@ -407,6 +504,7 @@ static void FreeParts(void) {
 	Mem_Free(MapRenderer_PartsNormal);
 	MapRenderer_PartsNormal      = NULL;
 	MapRenderer_PartsTranslucent = NULL;
+	MapRenderer_PartsCutout      = NULL;
 }
 
 static void FreeChunks(void) {
@@ -425,9 +523,10 @@ static void AllocateParts(void) {
 	struct ChunkPartInfo* ptr;
 	cc_uint32 count = chunksCount * MapRenderer_1DUsedCount;
 
-	ptr = (struct ChunkPartInfo*)Mem_AllocCleared(count * 2, sizeof(struct ChunkPartInfo), "chunk parts");
+	ptr = (struct ChunkPartInfo*)Mem_AllocCleared(count * 3, sizeof(struct ChunkPartInfo), "chunk parts");
 	MapRenderer_PartsNormal      = ptr;
 	MapRenderer_PartsTranslucent = ptr + count;
+	MapRenderer_PartsCutout      = ptr + count * 2;
 }
 
 static void AllocateChunks(void) {
@@ -444,6 +543,8 @@ static void ResetPartFlags(void) {
 		hasNormParts[i]   = false;
 		checkTranParts[i] = true;
 		hasTranParts[i]   = false;
+		checkCutParts[i]  = true;
+		hasCutParts[i]    = false;
 	}
 }
 
@@ -452,6 +553,7 @@ static void ResetPartCounts(void) {
 	for (i = 0; i < ATLAS1D_MAX_ATLASES; i++) {
 		normPartsCount[i] = 0;
 		tranPartsCount[i] = 0;
+		cutPartsCount[i]  = 0;
 	}
 }
 
@@ -534,7 +636,9 @@ static void RefreshBorderChunks(int maxHeight) {
 /*########################################################################################################################*
 *--------------------------------------------------Chunks updating/sorting------------------------------------------------*
 *#########################################################################################################################*/
-#define CHUNK_TARGET_TIME ((1.0f/30) + 0.01f)
+/* Frames that take longer than this reduce how many chunks get built per frame */
+/*  (i.e. aims to keep the game at 60 FPS while chunks are being built) */
+#define CHUNK_TARGET_TIME ((1.0f/60) + 0.005f)
 static int chunksTarget = 12;
 static Vec3 lastCamPos;
 static float lastYaw, lastPitch;
@@ -636,7 +740,7 @@ static void UpdateChunks(float delta) {
 	cc_bool samePos;
 	int chunkUpdates = 0;
 
-	/* Build more chunks if 30 FPS or over, otherwise slowdown */
+	/* Build more chunks if around 60 FPS or over, otherwise slowdown */
 	chunksTarget += delta < CHUNK_TARGET_TIME ? 1 : -1; 
 	Math_Clamp(chunksTarget, 4, maxChunkUpdates);
 
@@ -819,6 +923,9 @@ static void OnInit(void) {
 	MapRenderer_1DUsedCount = 87; /* Atlas1D_UsedAtlasesCount(); */
 	chunkPos   = IVec3_MaxValue();
 	maxChunkUpdates = Options_GetInt(OPT_MAX_CHUNK_UPDATES, 4, 1024, 30);
+	/* Options for comparing performance with and without these optimisations */
+	opaqueNoAlphaTest = Options_GetBool(OPT_OPAQUE_NO_ALPHATEST, true);
+	mergeGap          = Options_GetInt(OPT_DRAW_MERGE_GAP, 0, GFX_MAX_VERTICES, 64);
 	CalcViewDists();
 }
 

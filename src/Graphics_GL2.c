@@ -227,20 +227,30 @@ static struct GLShader* gfx_activeShader;
 static void GenVertexShader(const struct GLShader* shader, cc_string* dst) {
 	int uv = shader->features & FTR_TEXTURE_UV;
 	int tm = shader->features & FTR_TEX_OFFSET;
+	int fl = shader->features & FTR_LINEAR_FOG;
+	int fd = shader->features & FTR_DENSIT_FOG;
+	int fm = shader->features & FTR_HASANY_FOG;
 
 	String_AppendConst(dst,         "attribute vec3 in_pos;\n");
 	String_AppendConst(dst,         "attribute vec4 in_col;\n");
 	if (uv) String_AppendConst(dst, "attribute vec2 in_uv;\n");
 	String_AppendConst(dst,         "varying vec4 out_col;\n");
 	if (uv) String_AppendConst(dst, "varying vec2 out_uv;\n");
+	if (fm) String_AppendConst(dst, "varying float out_fog;\n");
 	String_AppendConst(dst,         "uniform mat4 mvp;\n");
 	if (tm) String_AppendConst(dst, "uniform vec2 texOffset;\n");
+	if (fl) String_AppendConst(dst, "uniform float fogEnd;\n");
 
 	String_AppendConst(dst,         "void main() {\n");
 	String_AppendConst(dst,         "  gl_Position = mvp * vec4(in_pos, 1.0);\n");
 	String_AppendConst(dst,         "  out_col = in_col;\n");
 	if (uv) String_AppendConst(dst, "  out_uv  = in_uv;\n");
 	if (tm) String_AppendConst(dst, "  out_uv  = out_uv + texOffset;\n");
+	/* gl_Position.w is the depth of the vertex (the same value as 1.0 / gl_FragCoord.w) */
+	/* Depth varies linearly across a triangle, so interpolating it (or a linear function of it) */
+	/*  gives exactly the same result as calculating it per pixel, but avoids a division per pixel */
+	if (fl) String_AppendConst(dst, "  out_fog = 1.0 - gl_Position.w * fogEnd;\n");
+	if (fd) String_AppendConst(dst, "  out_fog = gl_Position.w;\n");
 	String_AppendConst(dst,         "}");
 }
 
@@ -269,18 +279,18 @@ static void GenFragmentShader(const struct GLShader* shader, cc_string* dst) {
 
 	String_AppendConst(dst,         "varying vec4 out_col;\n");
 	if (uv) String_AppendConst(dst, "varying vec2 out_uv;\n");
+	if (fm) String_AppendConst(dst, "varying float out_fog;\n");
 	if (uv) String_AppendConst(dst, "uniform sampler2D texImage;\n");
 	if (fm) String_AppendConst(dst, "uniform vec3 fogCol;\n");
-	if (fl) String_AppendConst(dst, "uniform float fogEnd;\n");
 	if (fd) String_AppendConst(dst, "uniform float fogDensity;\n");
 
 	String_AppendConst(dst,         "void main() {\n");
 	if (uv) String_AppendConst(dst, "  vec4 col = texture2D(texImage, out_uv) * out_col;\n");
 	else    String_AppendConst(dst, "  vec4 col = out_col;\n");
 	if (al) String_AppendConst(dst, "  if (col.a < 0.5) discard;\n");
-	if (fm) String_AppendConst(dst, "  float depth = 1.0 / gl_FragCoord.w;\n");
-	if (fl) String_AppendConst(dst, "  float f = clamp(1.0 - depth * fogEnd, 0.0, 1.0);\n");
-	if (fd) String_AppendConst(dst, "  float f = clamp(exp(fogDensity * depth), 0.0, 1.0);\n");
+	/* See GenVertexShader for how out_fog is calculated */
+	if (fl) String_AppendConst(dst, "  float f = clamp(out_fog, 0.0, 1.0);\n");
+	if (fd) String_AppendConst(dst, "  float f = clamp(exp(fogDensity * out_fog), 0.0, 1.0);\n");
 	if (fm) String_AppendConst(dst, "  col.rgb = mix(fogCol, col.rgb, f);\n");
 	
 	if (fl || fd || fm) AddPostProcessing(dst);

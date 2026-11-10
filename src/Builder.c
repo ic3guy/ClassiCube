@@ -47,10 +47,24 @@ struct Builder1DPart {
 	int sCount, sOffset;
 };
 
-/* Part builder data, for both normal and translucent parts.
-The first ATLAS1D_MAX_ATLASES parts are for normal parts, remainder are for translucent parts. */
-static CC_BIG_VAR struct Builder1DPart Builder_Parts[ATLAS1D_MAX_ATLASES * 2];
+/* Part builder data, for opaque, translucent and cutout parts.
+The first ATLAS1D_MAX_ATLASES parts are for opaque parts, the next ATLAS1D_MAX_ATLASES are for translucent parts,
+and the last ATLAS1D_MAX_ATLASES are for cutout parts (alpha tested blocks such as leaves, glass and sprites). */
+#define BUILDER_BASE_OPAQUE      0
+#define BUILDER_BASE_TRANSLUCENT ATLAS1D_MAX_ATLASES
+#define BUILDER_BASE_CUTOUT      (ATLAS1D_MAX_ATLASES * 2)
+#define BUILDER_PARTS_COUNT      (ATLAS1D_MAX_ATLASES * 3)
+static CC_BIG_VAR struct Builder1DPart Builder_Parts[BUILDER_PARTS_COUNT];
 static struct VertexTextured* Builder_Vertices;
+
+/* Returns which group of parts the faces of the given block belong in */
+/* Only fully opaque blocks can be drawn without alpha testing */
+static CC_INLINE int Builder_PartBase(BlockID block) {
+	cc_uint8 draw = Blocks.Draw[block];
+	if (draw == DRAW_OPAQUE)      return BUILDER_BASE_OPAQUE;
+	if (draw == DRAW_TRANSLUCENT) return BUILDER_BASE_TRANSLUCENT;
+	return BUILDER_BASE_CUTOUT;
+}
 
 static int Builder1DPart_VerticesCount(struct Builder1DPart* part) {
 	int i, count = part->sCount;
@@ -79,7 +93,7 @@ static int Builder1DPart_CalcOffsets(struct Builder1DPart* part, int offset) {
 
 static int Builder_TotalVerticesCount(void) {
 	int i, count = 0;
-	for (i = 0; i < ATLAS1D_MAX_ATLASES * 2; i++) {
+	for (i = 0; i < BUILDER_PARTS_COUNT; i++) {
 		count += Builder1DPart_VerticesCount(&Builder_Parts[i]);
 	}
 	return count;
@@ -91,12 +105,12 @@ static int Builder_TotalVerticesCount(void) {
 *#########################################################################################################################*/
 static void AddSpriteVertices(BlockID block) {
 	int i = Atlas1D_Index(Block_Tex(block, FACE_XMAX));
-	struct Builder1DPart* part = &Builder_Parts[i];
+	struct Builder1DPart* part = &Builder_Parts[BUILDER_BASE_CUTOUT + i];
 	part->sCount += 4 * 4;
 }
 
 static void AddVertices(BlockID block, Face face) {
-	int baseOffset = (Blocks.Draw[block] == DRAW_TRANSLUCENT) * ATLAS1D_MAX_ATLASES;
+	int baseOffset = Builder_PartBase(block);
 	int i = Atlas1D_Index(Block_Tex(block, face));
 	struct Builder1DPart* part = &Builder_Parts[baseOffset + i];
 	part->faces.count[face] += 4;
@@ -335,21 +349,25 @@ static cc_bool ReadBorderChunkData(int x1, int y1, int z1, cc_bool* outAllAir) {
 }
 
 static void OutputChunkPartsMeta(int x, int y, int z, struct ChunkInfo* info) {
-	cc_bool hasNorm, hasTran;
+	cc_bool hasNorm, hasTran, hasCut;
 	int partsIndex;
-	int i, j, curIdx, offset;
-	
+	int i, j, k, curIdx, offset;
+
 	partsIndex = World_ChunkPack(x >> CHUNK_SHIFT, y >> CHUNK_SHIFT, z >> CHUNK_SHIFT);
 	offset  = 0;
 	hasNorm = false;
 	hasTran = false;
+	hasCut  = false;
 
+	/* NOTE: Must be the same order as in DefaultPostStretchChunk */
 	for (i = 0; i < MapRenderer_1DUsedCount; i++) {
-		j = i + ATLAS1D_MAX_ATLASES;
+		j = i + BUILDER_BASE_TRANSLUCENT;
+		k = i + BUILDER_BASE_CUTOUT;
 		curIdx = partsIndex + i * World.ChunksCount;
 
 		hasNorm |= SetPartInfo(&Builder_Parts[i], &offset, &MapRenderer_PartsNormal[curIdx]);
 		hasTran |= SetPartInfo(&Builder_Parts[j], &offset, &MapRenderer_PartsTranslucent[curIdx]);
+		hasCut  |= SetPartInfo(&Builder_Parts[k], &offset, &MapRenderer_PartsCutout[curIdx]);
 	}
 
 	if (hasNorm) {
@@ -357,6 +375,9 @@ static void OutputChunkPartsMeta(int x, int y, int z, struct ChunkInfo* info) {
 	}
 	if (hasTran) {
 		info->translucentParts = &MapRenderer_PartsTranslucent[partsIndex];
+	}
+	if (hasCut) {
+		info->cutoutParts      = &MapRenderer_PartsCutout[partsIndex];
 	}
 }
 
@@ -460,6 +481,7 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
 
 		BuildPartVbs(&MapRenderer_PartsNormal[curIdx]);
 		BuildPartVbs(&MapRenderer_PartsTranslucent[curIdx]);
+		BuildPartVbs(&MapRenderer_PartsCutout[curIdx]);
 	}
 #else
 	Gfx_UnlockVb(info->vb);
@@ -482,13 +504,16 @@ static void DefaultPrePrepateChunk(void) {
 }
 
 static void DefaultPostStretchChunk(void) {
-	int i, j, offset;
+	int i, j, k, offset;
 	offset = 0;
+	/* NOTE: Must be the same order as in OutputChunkPartsMeta */
 	for (i = 0; i < ATLAS1D_MAX_ATLASES; i++) {
-		j = i + ATLAS1D_MAX_ATLASES;
+		j = i + BUILDER_BASE_TRANSLUCENT;
+		k = i + BUILDER_BASE_CUTOUT;
 
 		offset = Builder1DPart_CalcOffsets(&Builder_Parts[i], offset);
 		offset = Builder1DPart_CalcOffsets(&Builder_Parts[j], offset);
+		offset = Builder1DPart_CalcOffsets(&Builder_Parts[k], offset);
 	}
 }
 
@@ -529,7 +554,7 @@ static void Builder_DrawSprite(int x, int y, int z) {
 	}
 	
 	bright = Blocks.Brightness[Builder_Block];
-	part   = &Builder_Parts[Atlas1D_Index(loc)];
+	part   = &Builder_Parts[BUILDER_BASE_CUTOUT + Atlas1D_Index(loc)];
 	color  = bright ? PACKEDCOL_WHITE : Lighting.Color_Sprite_Fast(x, y, z);
 	Block_Tint(color, Builder_Block);
 
@@ -685,7 +710,7 @@ static void NormalBuilder_RenderBlock(int index, int x, int y, int z) {
 		!count_ZMax && !count_YMin && !count_YMax) return;
 
 	fullBright = Blocks.Brightness[Builder_Block];
-	baseOffset = (Blocks.Draw[Builder_Block] == DRAW_TRANSLUCENT) * ATLAS1D_MAX_ATLASES;
+	baseOffset = Builder_PartBase(Builder_Block);
 	lightFlags = Blocks.LightOffset[Builder_Block];
 
 	Drawer.MinBB = Blocks.MinBB[Builder_Block]; Drawer.MinBB.y = 1.0f - Drawer.MinBB.y;
@@ -1239,7 +1264,7 @@ static void Adv_RenderBlock(int index, int x, int y, int z) {
 		!count_ZMax && !count_YMin && !count_YMax) return;
 
 	Builder_FullBright = Blocks.Brightness[Builder_Block];
-	adv_baseOffset = (Blocks.Draw[Builder_Block] == DRAW_TRANSLUCENT) * ATLAS1D_MAX_ATLASES;
+	adv_baseOffset = Builder_PartBase(Builder_Block);
 	adv_tinted     = Blocks.Tinted[Builder_Block];
 
 	min = Blocks.RenderMinBB[Builder_Block]; max = Blocks.RenderMaxBB[Builder_Block];
@@ -1595,7 +1620,7 @@ static void Modern_RenderBlock(int index, int x, int y, int z) {
 		!count_ZMax && !count_YMin && !count_YMax) return;
 
 	Builder_FullBright = Blocks.Brightness[Builder_Block];
-	adv_baseOffset = (Blocks.Draw[Builder_Block] == DRAW_TRANSLUCENT) * ATLAS1D_MAX_ATLASES;
+	adv_baseOffset = Builder_PartBase(Builder_Block);
 	adv_tinted = Blocks.Tinted[Builder_Block];
 
 	min = Blocks.RenderMinBB[Builder_Block]; max = Blocks.RenderMaxBB[Builder_Block];

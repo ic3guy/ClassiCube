@@ -507,12 +507,15 @@ static void Render3DFrame(float delta, float t) {
 	EntityNames_Render();
 
 	Particles_Render(t);
-	EnvRenderer_RenderSky();
-	EnvRenderer_RenderClouds();
 
 	MapRenderer_Update(delta);
 	MapRenderer_RenderNormal(delta);
 	EnvRenderer_RenderMapSides();
+
+	/* Sky and clouds are rendered after the map, so that the GPU can skip */
+	/*  the pixels of them that are hidden behind the map (depth test fails) */
+	EnvRenderer_RenderSky();
+	EnvRenderer_RenderClouds();
 
 	EntityShadows_Render();
 	if (Game_SelectedPos.valid && !Game_HideGui) {
