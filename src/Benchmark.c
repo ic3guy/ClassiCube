@@ -12,6 +12,7 @@
 #include "Funcs.h"
 #include "Block.h"
 #include "BlockPhysics.h"
+#include "HiZ.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -19,6 +20,7 @@ int Benchmark_Mode, Benchmark_Draws, Benchmark_BuildUs, Benchmark_PacingUs;
 int Benchmark_Pending = -1;
 cc_bool Benchmark_Preloading;
 cc_bool Benchmark_DisableOcclusion;
+int Benchmark_MeshBefore,Benchmark_MeshAfter;
 static cc_bool compareImages;
 static int comparePhase;
 static int maxPending;
@@ -53,7 +55,7 @@ void Benchmark_Init(void) {
 	freezeScene = Options_GetBool("benchmark-freeze", false);
 	capture = Options_GetBool("benchmark-capture", false);
 	compareImages=Options_GetBool("benchmark-compare-images",false);
-	Benchmark_DisableOcclusion=compareImages;
+	Benchmark_DisableOcclusion=false;
 	dumpWorld = Options_GetBool("benchmark-dump", false);
 	editFixture = Options_GetInt("benchmark-edit-fixture",0,2,0);
 	Benchmark_Preloading = Options_GetBool("benchmark-preload", false);
@@ -78,7 +80,7 @@ int Benchmark_Seed(int seed) {
 void Benchmark_Position(void) {
 	struct LocationUpdate update;
 	struct LocalPlayer* p = Entities.CurPlayer;
-	float elapsed, angle, radius;
+	float elapsed, pathElapsed, angle, radius;
 	int y, x, z;
 	BlockID block;
 	if (!Benchmark_Mode || !World.Loaded || !World.Blocks) return;
@@ -117,7 +119,7 @@ void Benchmark_Position(void) {
 	}
 	if (freezeScene) Game.Time = 100.0;
 	if(compareImages && !Benchmark_Preloading && Benchmark_Pending==0) {
-		if(comparePhase==0 && elapsed>=warmup) { Game_ScreenshotRequested=true; comparePhase=1; }
+		if(comparePhase==0 && elapsed>=warmup) { Benchmark_DisableOcclusion=true; Game_ScreenshotRequested=true; comparePhase=1; }
 		else if(comparePhase==1 && elapsed>=warmup+2) {
 			Benchmark_DisableOcclusion=false; Game_ScreenshotRequested=true; comparePhase=2;
 		}
@@ -126,6 +128,10 @@ void Benchmark_Position(void) {
 		Game_ScreenshotRequested = true; captured = true;
 	}
 	update.flags = LU_HAS_POS | LU_HAS_YAW | LU_HAS_PITCH;
+	/* Hold a moving route still before its A/B pictures, while retaining
+	   occluder history from the preceding movement during warmup. */
+	pathElapsed=compareImages && elapsed>warmup-1?warmup-1:elapsed;
+	if(Benchmark_Preloading) pathElapsed=warmup;
 	update.pos   = p->Spawn;
 	update.yaw   = 45.0f;
 	update.pitch = 15.0f;
@@ -138,7 +144,7 @@ void Benchmark_Position(void) {
 	}
 	if (Benchmark_Mode == 2) {
 		/* One 20-second orbit, repeated during warmup so streaming also warms up. */
-		angle = (elapsed - warmup) * (2.0f * MATH_PI / 20.0f);
+		angle = (pathElapsed - warmup) * (2.0f * MATH_PI / 20.0f);
 		radius = min(World.Width * 0.3f, 96.0f);
 		update.pos.x = World.Width  * 0.5f + Math_SinF(angle) * radius;
 		update.pos.z = World.Length * 0.5f - Math_CosF(angle) * radius;
@@ -148,7 +154,7 @@ void Benchmark_Position(void) {
 	}
 	if (Benchmark_Mode == 3) {
 		/* About five blocks/second, following terrain without keyboard timing noise. */
-		angle = (elapsed - warmup) * (2.0f * MATH_PI / 60.0f);
+		angle = (pathElapsed - warmup) * (2.0f * MATH_PI / 60.0f);
 		radius = min(World.Width * 0.25f, 48.0f);
 		update.pos.x = World.Width  * 0.5f + Math_SinF(angle) * radius;
 		update.pos.z = World.Length * 0.5f - Math_CosF(angle) * radius;
@@ -219,6 +225,8 @@ void Benchmark_End(cc_uint64 start, cc_uint64 draw, cc_uint64 submit) {
 		Benchmark_Mode, World.Width, World.Seed, Game.Width, Game.Height, syncGpu, count);
 	printf("BENCH_CSV frame_us,logic_us,draw_us,wait_us,present_us,build_us,draws,vertices,distance\n");
 	printf("BENCH_READY max_pending=%d last_pending=%d\n", maxPending, Benchmark_Pending);
+	printf("BENCH_MESH before_vertices=%d after_vertices=%d\n",Benchmark_MeshBefore,Benchmark_MeshAfter);
+	HiZ_LogStats();
 	for (i = 0; i < 64; i++) if (heightTotals[i]) printf("BENCH_HEIGHT y=%d submitted_vertices=%.0f\n",i*16,heightTotals[i]/count);
 	for (i = 0; i < count; i++) {
 		s = &samples[i];

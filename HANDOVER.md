@@ -4,7 +4,7 @@
 > 60 FPS in Normal and Huge worlds. Adaptive fog/distance is no longer an accepted
 > solution. See [full-view experiments and validation](doc/pi3-full-view.md).
 
-> Follow-up, 2026-11-10: direct Pi testing now supports paced 60fps in Normal and Huge worlds at 854x480 with adaptive view distance. See [measured results and settings](doc/pi3-performance.md). The access constraints and unresolved status below describe the earlier session.
+> Current experimental work is on full-view-60. Greedy meshing and an optional distant-detail prototype are built and measured on the Pi. Live Huge gameplay still misses the target. These experiments have not replaced the installed executable. The earlier adaptive-distance results and original handover below are historical.
 
 **Written:** 2026-11-10
 **From:** Windows work PC, repo at `C:\source\classiCube` (Cowork / Claude Code session)

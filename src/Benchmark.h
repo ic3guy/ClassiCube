@@ -7,6 +7,7 @@ extern int Benchmark_Mode, Benchmark_Draws, Benchmark_BuildUs, Benchmark_PacingU
 extern int Benchmark_Pending;
 extern cc_bool Benchmark_Preloading;
 extern cc_bool Benchmark_DisableOcclusion;
+extern int Benchmark_MeshBefore,Benchmark_MeshAfter;
 void Benchmark_RecordDraw(int worldY, int vertices);
 void Benchmark_Init(void);
 void Benchmark_Position(void);

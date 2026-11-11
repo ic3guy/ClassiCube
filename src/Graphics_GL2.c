@@ -9,6 +9,8 @@
 #include "Errors.h"
 #include "Window.h"
 #include "Menus.h"
+#include "Greedy.h"
+#include "TexturePack.h"
 
 /* OpenGL 2.0 backend (alternative modern-ish backend) */
 #include "../misc/opengl/GLCommon.h"
@@ -44,6 +46,7 @@ static cc_uint16 gl_indices[GFX_MAX_INDICES];
 #ifdef CC_BUILD_LINUX
 static int chunkFlushVertices, chunkSubmittedVertices;
 static void (*chunkFlush)(void);
+static void (APIENTRY *terrainMultiDraw)(GLenum,const GLsizei*,GLenum,const void* const*,GLsizei);
 #endif
 #include "_GLShared.h"
 static void GLBackend_Init(void);
@@ -58,6 +61,7 @@ void Gfx_Create(void) {
 #ifdef CC_BUILD_LINUX
 	chunkFlushVertices=Options_GetInt("gfx-flushverts",0,16777216,0);
 	if(chunkFlushVertices) chunkFlush=(void (*)(void))GLContext_GetAddress("glFlush");
+	if(Options_GetBool("gfx-multidraw",false)) terrainMultiDraw=(void*)GLContext_GetAddress("glMultiDrawElements");
 #endif
 #ifdef CC_BUILD_WIN
 	GLContext_GetAll(core_funcs, Array_Elems(core_funcs));
@@ -127,13 +131,17 @@ void* Gfx_LockVb(GfxResourceID vb, VertexFormat fmt, int count) {
 }
 
 static cc_bool UnlockVb(GfxResourceID vb) {
+#ifdef CC_BUILD_LINUX
+	while(glGetError()!=0) { }
+#endif
 	glBufferData(GL_ARRAY_BUFFER, tmpSize, tmpData, GL_STATIC_DRAW);
-#if defined CC_BUILD_SYMBIAN
+#if defined CC_BUILD_SYMBIAN || defined CC_BUILD_LINUX
 	return glGetError() != GL_OUT_OF_MEMORY;
 #else
 	return true;
 #endif
 }
+void Gfx_TrimTerrainVb(int count) { tmpSize=count*SIZEOF_VERTEX_TEXTURED; }
 
 
 /*########################################################################################################################*
@@ -186,6 +194,7 @@ void Gfx_SetScratchVbData(GfxResourceID vb, void* vertices, int vCount) {
 #define FTR_LINEAR_FOG (1 << 3)
 #define FTR_DENSIT_FOG (1 << 4)
 #define FTR_HASANY_FOG (FTR_LINEAR_FOG | FTR_DENSIT_FOG)
+#define FTR_TERRAIN   (1 << 5)
 #define FTR_FS_MEDIUMP (1 << 7)
 
 #define UNI_MVP_MATRIX (1 << 0)
@@ -193,20 +202,23 @@ void Gfx_SetScratchVbData(GfxResourceID vb, void* vertices, int vCount) {
 #define UNI_FOG_COL    (1 << 2)
 #define UNI_FOG_END    (1 << 3)
 #define UNI_FOG_DENS   (1 << 4)
-#define UNI_MASK_ALL   0x1F
+#define UNI_TILE_SIZE  (1 << 5)
+#define UNI_MASK_ALL   0x3F
 
 /* cached uniforms (cached for multiple programs */
 static struct Matrix _view, _proj, _mvp;
 static cc_bool gfx_texTransform;
 static float _texX, _texY;
+static cc_bool terrainRepeat;
+static float terrainTileSize;
 
 /* shader programs (emulate fixed function) */
 static struct GLShader {
 	int features;     /* what features are enabled for this shader */
 	int uniforms;     /* which associated uniforms need to be resent to GPU */
 	GLuint program;   /* OpenGL program ID (0 if not yet compiled) */
-	int locations[5]; /* location of uniforms (not constant) */
-} shaders[6 * 3] = {
+	int locations[6]; /* location of uniforms (not constant) */
+} shaders[6 * 3 * 2] = {
 	/* no fog */
 	{ 0              },
 	{ 0              | FTR_ALPHA_TEST },
@@ -233,6 +245,7 @@ static struct GLShader* gfx_activeShader;
 
 /* Generates source code for a GLSL vertex shader, based on shader's flags */
 static void GenVertexShader(const struct GLShader* shader, cc_string* dst) {
+	int tr = shader->features & FTR_TERRAIN;
 	int uv = shader->features & FTR_TEXTURE_UV;
 	int tm = shader->features & FTR_TEX_OFFSET;
 	int fl = shader->features & FTR_LINEAR_FOG;
@@ -244,6 +257,7 @@ static void GenVertexShader(const struct GLShader* shader, cc_string* dst) {
 	if (uv) String_AppendConst(dst, "attribute vec2 in_uv;\n");
 	String_AppendConst(dst,         "varying vec4 out_col;\n");
 	if (uv) String_AppendConst(dst, "varying vec2 out_uv;\n");
+	if (tr) String_AppendConst(dst, "varying float out_tile;\n");
 	if (fm) String_AppendConst(dst, "varying float out_fog;\n");
 	String_AppendConst(dst,         "uniform mat4 mvp;\n");
 	if (tm) String_AppendConst(dst, "uniform vec2 texOffset;\n");
@@ -251,7 +265,8 @@ static void GenVertexShader(const struct GLShader* shader, cc_string* dst) {
 
 	String_AppendConst(dst,         "void main() {\n");
 	String_AppendConst(dst,         "  gl_Position = mvp * vec4(in_pos, 1.0);\n");
-	String_AppendConst(dst,         "  out_col = in_col;\n");
+	if (tr) String_AppendConst(dst, "  out_col = vec4(in_col.rgb, 1.0);\n  out_tile = in_col.a * 255.0;\n");
+	else String_AppendConst(dst,   "  out_col = in_col;\n");
 	if (uv) String_AppendConst(dst, "  out_uv  = in_uv;\n");
 	if (tm) String_AppendConst(dst, "  out_uv  = out_uv + texOffset;\n");
 	/* gl_Position.w is the depth of the vertex (the same value as 1.0 / gl_FragCoord.w) */
@@ -273,11 +288,13 @@ static void AddPostProcessing(cc_string* dst) {
 
 /* Generates source code for a GLSL fragment shader, based on shader's flags */
 static void GenFragmentShader(const struct GLShader* shader, cc_string* dst) {
+	int tr = shader->features & FTR_TERRAIN;
 	int uv = shader->features & FTR_TEXTURE_UV;
 	int al = shader->features & FTR_ALPHA_TEST;
 	int fl = shader->features & FTR_LINEAR_FOG;
 	int fd = shader->features & FTR_DENSIT_FOG;
 	int fm = shader->features & FTR_HASANY_FOG;
+	if (tr && Greedy_ExplicitGrad) String_AppendConst(dst, "#extension GL_ARB_shader_texture_lod : require\n");
 
 #ifdef CC_BUILD_GLES
 	int mp = shader->features & FTR_FS_MEDIUMP;
@@ -287,13 +304,22 @@ static void GenFragmentShader(const struct GLShader* shader, cc_string* dst) {
 
 	String_AppendConst(dst,         "varying vec4 out_col;\n");
 	if (uv) String_AppendConst(dst, "varying vec2 out_uv;\n");
+	if (tr) String_AppendConst(dst, "varying float out_tile;\nuniform float tileSize;\n");
 	if (fm) String_AppendConst(dst, "varying float out_fog;\n");
 	if (uv) String_AppendConst(dst, "uniform sampler2D texImage;\n");
 	if (fm) String_AppendConst(dst, "uniform vec3 fogCol;\n");
 	if (fd) String_AppendConst(dst, "uniform float fogDensity;\n");
 
 	String_AppendConst(dst,         "void main() {\n");
-	if (uv) String_AppendConst(dst, "  vec4 col = texture2D(texImage, out_uv) * out_col;\n");
+	if (tr) {
+		String_AppendConst(dst, "  vec2 uv = vec2(out_uv.x, (floor(out_tile + 0.5) + fract(out_uv.y)) * tileSize);\n");
+		if(Greedy_ExplicitGrad) String_AppendConst(dst,
+			"  vec2 gx = vec2(dFdx(out_uv.x), dFdx(out_uv.y) * tileSize);\n"
+			"  vec2 gy = vec2(dFdy(out_uv.x), dFdy(out_uv.y) * tileSize);\n"
+			"  vec4 col = texture2DGradARB(texImage, uv, gx, gy) * out_col;\n");
+		else String_AppendConst(dst, "  vec4 col = texture2D(texImage, uv) * out_col;\n");
+	}
+	else if (uv) String_AppendConst(dst, "  vec4 col = texture2D(texImage, out_uv) * out_col;\n");
 	else    String_AppendConst(dst, "  vec4 col = out_col;\n");
 	if (al) String_AppendConst(dst, "  if (col.a < 0.5) discard;\n");
 	/* See GenVertexShader for how out_fog is calculated */
@@ -393,6 +419,7 @@ static void CompileProgram(struct GLShader* shader) {
 		shader->locations[2] = glGetUniformLocation(program, "fogCol");
 		shader->locations[3] = glGetUniformLocation(program, "fogEnd");
 		shader->locations[4] = glGetUniformLocation(program, "fogDensity");
+		shader->locations[5] = glGetUniformLocation(program, "tileSize");
 		return;
 	}
 	temp = 0;
@@ -418,6 +445,9 @@ static void DirtyUniform(int uniform) {
 static void ReloadUniforms(void) {
 	struct GLShader* s = gfx_activeShader;
 	if (!s) return; /* NULL if context is lost */
+	if ((s->uniforms & UNI_TILE_SIZE) && (s->features & FTR_TERRAIN)) {
+		glUniform1f(s->locations[5],Atlas1D.InvTileSize); s->uniforms &= ~UNI_TILE_SIZE;
+	}
 
 	if (s->uniforms & UNI_MVP_MATRIX) {
 		glUniformMatrix4fv(s->locations[0], 1, false, (float*)&_mvp);
@@ -458,6 +488,7 @@ static void SwitchProgram(void) {
 	if (gfx_format == VERTEX_FORMAT_TEXTURED) index += 2;
 	if (gfx_texTransform) index += 2;
 	if (gfx_alphaTest)    index += 1;
+	if (terrainRepeat && gfx_format==VERTEX_FORMAT_TEXTURED) index += 18;
 
 	shader = &shaders[index];
 	if (shader == gfx_activeShader) { ReloadUniforms(); return; }
@@ -486,6 +517,10 @@ void Gfx_BindTexture(GfxResourceID texId) {
 *-----------------------------------------------------State management----------------------------------------------------*
 *#########################################################################################################################*/
 void Gfx_SetFog(cc_bool enabled) { gfx_fogEnabled = enabled; SwitchProgram(); }
+void Gfx_SetTerrainRepeat(cc_bool enabled) {
+	if(terrainTileSize!=Atlas1D.InvTileSize) { terrainTileSize=Atlas1D.InvTileSize; DirtyUniform(UNI_TILE_SIZE); }
+	terrainRepeat=enabled; SwitchProgram();
+}
 
 static void SetFogColor(PackedCol color) {
 	DirtyUniform(UNI_FOG_COL);
@@ -546,6 +581,17 @@ void Gfx_DisableTextureOffset(void) {
 *-------------------------------------------------------State setup-------------------------------------------------------*
 *#########################################################################################################################*/
 static void GLBackend_Init(void) {
+	int i;
+	for(i=0;i<18;i++) shaders[i+18].features=shaders[i].features|FTR_TERRAIN;
+	terrainRepeat=false;
+#if defined CC_BUILD_LINUX && !defined CC_BUILD_GLES
+	{
+		static const cc_string lod=String_FromConst("GL_ARB_shader_texture_lod");
+		cc_string extensions=String_FromReadonly((const char*)glGetString(GL_EXTENSIONS));
+		Greedy_Supported=true;
+		Greedy_ExplicitGrad=String_CaselessContains(&extensions,&lod);
+	}
+#endif
 #ifdef CC_BUILD_GLES
 	// OpenGL ES 2.0 doesn't support custom mipmaps levels, but 3.2 does
 	// Note that GL_MAJOR_VERSION and GL_MINOR_VERSION were not actually
@@ -752,4 +798,21 @@ void Gfx_DrawIndexedTris_T2fC4b(int verticesCount, int startVertex, DrawHints hi
 		glDrawElements(GL_TRIANGLES, ICOUNT(verticesCount), GL_UNSIGNED_SHORT, uint_to_ptr(startVertex * 3));
 	}
 }
+#ifdef CC_BUILD_LINUX
+cc_bool Gfx_DrawTerrainRanges(int count,const int* lengths,const int* starts) {
+	GLsizei counts[512]; const void* offsets[512]; int i,total=0;
+	if(!terrainMultiDraw || count<2 || count>512) return false;
+	for(i=0;i<count;i++) {
+		if(starts[i]+lengths[i]>GFX_MAX_VERTICES) return false;
+		counts[i]=ICOUNT(lengths[i]); offsets[i]=uint_to_ptr(starts[i]*3); total+=lengths[i];
+	}
+	if(chunkFlushVertices && total>chunkFlushVertices) return false;
+	if(chunkFlush && chunkSubmittedVertices && chunkSubmittedVertices+total>chunkFlushVertices) {
+		chunkFlush(); chunkSubmittedVertices=0;
+	}
+	chunkSubmittedVertices+=total;
+	terrainMultiDraw(GL_TRIANGLES,counts,GL_UNSIGNED_SHORT,offsets,count);
+	return true;
+}
+#endif
 #endif

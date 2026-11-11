@@ -17,8 +17,11 @@
 #include "Benchmark.h"
 #include "Adaptive.h"
 #include "Occlusion.h"
+#include "Greedy.h"
+#include "TerrainLOD.h"
 
 int MapRenderer_1DUsedCount;
+static cc_bool lastGreedyMode;
 struct ChunkPartInfo* MapRenderer_PartsNormal;
 struct ChunkPartInfo* MapRenderer_PartsTranslucent;
 struct ChunkPartInfo* MapRenderer_PartsCutout;
@@ -70,6 +73,9 @@ static void ChunkInfo_Init(struct ChunkInfo* chunk, int x, int y, int z) {
 	chunk->noData   = true;
 	chunk->dirty    = true;
 	chunk->skipClip = false;
+	chunk->lodDirty = false;
+	chunk->meshLod = 0;
+	chunk->meshReady = false;
 
 	chunk->drawXMin = false; chunk->drawXMax = false; chunk->drawZMin = false;
 	chunk->drawZMax = false; chunk->drawYMin = false; chunk->drawYMax = false;
@@ -80,6 +86,7 @@ static void ChunkInfo_Init(struct ChunkInfo* chunk, int x, int y, int z) {
 }
 
 static CC_INLINE void ChunkInfo_Refresh(struct ChunkInfo* chunk) {
+	chunk->lodDirty=false;
 	Occlusion_Invalidate();
 	if (chunk->allAir) return; /* do not recreate chunks completely air */
 
@@ -160,6 +167,36 @@ if (drawMin && drawMax) { \
 /* Bit in the 'wanted' mask of DrawPartSections for the given face of a chunk part */
 #define SECTION_FACE(face) (2 << (face))
 
+#if defined CC_BUILD_LINUX && CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+static void DrawSpatialRanges(struct ChunkInfo* info,const struct ChunkPartInfo* part,int wanted) {
+	int lengths[512],starts[512],used=0,total=0,i;
+	for(i=0;i<part->rangeCount;i++) {
+		const struct OcclusionRange* r=&part->ranges[i];
+		if(!(wanted&r->section) || Occlusion_HiddenRange(r)) continue;
+		if(used && starts[used-1]+lengths[used-1]==r->offset && lengths[used-1]+r->count<=GFX_MAX_VERTICES) {
+			lengths[used-1]+=r->count;
+		} else {
+			if(used==512) {
+				int j;
+				if(Gfx_DrawTerrainRanges(used,lengths,starts)) {
+					if(Benchmark_Mode) Benchmark_RecordDraw(info->centreY,total);
+				} else for(j=0;j<used;j++) { DrawBatch(lengths[j],starts[j]); if(Benchmark_Mode) Benchmark_RecordDraw(info->centreY,lengths[j]); }
+				Game_Vertices+=total; used=total=0;
+			}
+			starts[used]=r->offset; lengths[used++]=r->count;
+		}
+		total+=r->count;
+	}
+	if(!used) return;
+	if(Gfx_DrawTerrainRanges(used,lengths,starts)) {
+		if(Benchmark_Mode) Benchmark_RecordDraw(info->centreY,total);
+	} else for(i=0;i<used;i++) {
+		DrawBatch(lengths[i],starts[i]); if(Benchmark_Mode) Benchmark_RecordDraw(info->centreY,lengths[i]);
+	}
+	Game_Vertices+=total;
+}
+#endif
+
 /* Draws the wanted sections of the given chunk part, using as few draw calls as possible. */
 /* The vertices of a chunk part are stored as sprites first, then each of the six faces in order. */
 /*  Therefore wanted sections that are next to each other can be drawn using just one draw call. */
@@ -172,6 +209,9 @@ static void DrawPartSections(struct ChunkInfo* info, const struct ChunkPartInfo*
 	int i, count;
 #ifdef CC_BUILD_LINUX
 	if(part->ranges) {
+#if CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+		DrawSpatialRanges(info,part,wanted); return;
+#endif
 		for(i=0;i<part->rangeCount;i++) {
 			const struct OcclusionRange* r=&part->ranges[i];
 			if(!(wanted&r->section) || Occlusion_HiddenRange(r)) continue;
@@ -297,6 +337,7 @@ void MapRenderer_RenderNormal(float delta) {
 	/* Fully opaque blocks first, as they do not need alpha testing */
 	/*  (chunks are sorted nearest first, so the GPU can then skip most hidden pixels) */
 	Gfx_SetAlphaTest(!opaqueNoAlphaTest);
+	Gfx_SetTerrainRepeat(Greedy_Enabled());
 	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++)
 	{
 		if (normPartsCount[batch] <= 0) continue;
@@ -308,6 +349,7 @@ void MapRenderer_RenderNormal(float delta) {
 	}
 
 	/* Then blocks that do need alpha testing (e.g. leaves, glass, sprites) */
+	Gfx_SetTerrainRepeat(false);
 	Gfx_SetAlphaTest(true);
 	for (batch = 0; batch < MapRenderer_1DUsedCount; batch++)
 	{
@@ -435,6 +477,7 @@ void MapRenderer_RenderTranslucent(float delta) {
 *#########################################################################################################################*/
 /* Deletes vertex buffer associated with the given chunk and updates internal state */
 static void DeleteChunk(struct ChunkInfo* chunk) {
+	chunk->meshReady=false;
 	Occlusion_Invalidate();
 	struct ChunkPartInfo* ptr;
 	int i;
@@ -504,6 +547,8 @@ static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
 	if (!Builder_MakeChunk(chunk)) return;
 
 	chunk->dirty  = false;
+	chunk->meshReady = true;
+	chunk->lodDirty = false;
 	chunk->noData = !chunk->normalParts && !chunk->translucentParts && !chunk->cutoutParts;
 	chunk->empty  = chunk->noData;
 	if (chunk->empty) return;
@@ -704,7 +749,7 @@ static cc_bool CanBuildChunk(struct ChunkInfo* chunk, int chunkUpdates) {
 	if (chunkUpdates >= chunksTarget) return false;
 	/* Chunks that already have a mesh are being rebuilt because their blocks changed, */
 	/*  so are rebuilt straight away to avoid e.g. brief holes at the edges of chunks */
-	if (!chunk->noData) return true;
+	if (!chunk->noData && !chunk->lodDirty) return true;
 
 	if (buildBudgetSpent) return false;
 	/* Always build at least one chunk per frame, so that progress is always made */
@@ -753,6 +798,7 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
 	for (i = 0; i < chunksCount; i++) 
 	{
 		chunk = sortedChunks[i];
+		if (chunk->meshLod!=TerrainLOD_Signature(chunk)) { if(!chunk->dirty) chunk->lodDirty=true; chunk->dirty=true; chunk->empty=false; }
 		if (chunk->empty) continue;
 		distSqr = distances[i];
 		
@@ -796,6 +842,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
 	for (i = 0; i < chunksCount; i++) 
 	{
 		chunk = sortedChunks[i];
+		if (chunk->meshLod!=TerrainLOD_Signature(chunk)) { if(!chunk->dirty) chunk->lodDirty=true; chunk->dirty=true; chunk->empty=false; }
 		if (chunk->empty) continue;
 		distSqr = distances[i];
 
@@ -929,13 +976,18 @@ void MapRenderer_Update(float delta) {
 	}
 #endif
 	if (!mapChunks) return;
+	/* Texture/mipmap changes can alter whether the repeating terrain format
+	   is supported. Rebuild all meshes before switching its shader format. */
+	if(lastGreedyMode!=Greedy_Enabled()) {
+		lastGreedyMode=Greedy_Enabled(); MapRenderer_Refresh();
+	}
 	UpdateSortOrder();
 	UpdateChunks(delta);
 #ifdef CC_BUILD_LINUX
 	if (Benchmark_Mode) {
 		Benchmark_Pending = 0;
 		for (i = 0; i < chunksCount; i++) {
-			if (mapChunks[i].dirty && mapChunks[i].noData && !mapChunks[i].empty) Benchmark_Pending++;
+			if (!mapChunks[i].meshReady && !mapChunks[i].empty) Benchmark_Pending++;
 		}
 	}
 #endif
@@ -1030,6 +1082,7 @@ static void OnNewMapLoaded(void) {
 
 static void OnInit(void) {
 	Occlusion_Init();
+	TerrainLOD_Init();
 	Event_Register_(&TextureEvents.AtlasChanged,  NULL, OnTerrainAtlasChanged);
 	Event_Register_(&WorldEvents.EnvVarChanged,   NULL, OnEnvVariableChanged);
 	Event_Register_(&BlockEvents.BlockDefChanged, NULL, OnBlockDefinitionChanged);

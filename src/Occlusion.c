@@ -35,6 +35,13 @@ static cc_bool portalEnabled, hizEnabled;
 static cc_bool meshOccluders;
 static int boxBudget;
 static int meshBands;
+static int meshGrid;
+static int workBudgetUs,depthChunk,depthFace,depthBoxes,depthScanned,depthChecked;
+static cc_bool moreDepth;
+struct FaceRef { int chunk,face; };
+static struct FaceRef historyFaces[16384],currentFaces[16384];
+static int historyCount,historyCursor,currentCount;
+static cc_bool reuseFaces;
 static cc_bool boundsActive;
 static unsigned serial, cachedSerial;
 static cc_bool cached;
@@ -50,6 +57,9 @@ void Occlusion_Init(void) {
 	boxBudget = Options_GetInt("gfx-hizboxes",16,16384,128);
 	meshOccluders=Options_GetBool("gfx-hizmesh",false);
 	meshBands = Options_GetInt("gfx-meshbands",0,16,0);
+	meshGrid = Options_GetInt("gfx-meshgrid",0,8,0);
+	workBudgetUs=Options_GetInt("gfx-hizbudgetus",0,20000,3000);
+	reuseFaces=Options_GetBool("gfx-hizreuse",true);
 	enabled = portalEnabled || hizEnabled;
 }
 void Occlusion_Invalidate(void) { serial++; }
@@ -57,6 +67,8 @@ void Occlusion_Invalidate(void) { serial++; }
 void Occlusion_Reset(void) {
 	int i;
 	boundsActive=false;
+	moreDepth=false;
+	historyCount=historyCursor=currentCount=0;
 	if(portals) for(i=0;i<capacity;i++) Mem_Free(portals[i].surfaces);
 	Mem_Free(portals); Mem_Free(state); Mem_Free(queue);
 	portals = NULL; state = NULL; queue = NULL;
@@ -204,6 +216,10 @@ static void RangeBounds(struct OcclusionRange* r,const struct VertexTextured* v)
 static int FaceCompare(const void* aa,const void* bb) {
 	const struct MeshFace *a=aa,*b=bb;
 	float ka=a->y+a->sy,kb=b->y+b->sy;
+	float areaA=a->sx*a->sy+a->sx*a->sz+a->sy*a->sz;
+	float areaB=b->sx*b->sy+b->sx*b->sz+b->sy*b->sz;
+	float rankA=areaA+ka*32,rankB=areaB+kb*32;
+	if(rankA!=rankB) return rankA<rankB?1:-1;
 	return ka<kb?1:ka>kb?-1:0;
 }
 void Occlusion_BuildSurfaces(int index,const struct VertexTextured* vertices) {
@@ -255,35 +271,41 @@ static cc_bool Facing(const struct MeshFace* f) {
 	}
 	return false;
 }
-void Occlusion_BuildRanges(struct ChunkPartInfo* part,struct VertexTextured* vertices,int chunkY) {
+static int MeshBin(const struct VertexTextured* v,int x,int y,int z) {
+	float cx=0,cy=0,cz=0; int i,a,b,c;
+	for(i=0;i<4;i++) { cx+=v[i].x; cy+=v[i].y; cz+=v[i].z; }
+	if(!meshGrid) return max(0,min(meshBands-1,Math_Floor((cy*0.25f-y)*(meshBands/16.0f))));
+	a=Math_Floor((cx*0.25f-x)*(meshGrid/16.0f)); a=max(0,min(meshGrid-1,a));
+	b=Math_Floor((cy*0.25f-y)*(meshGrid/16.0f)); b=max(0,min(meshGrid-1,b));
+	c=Math_Floor((cz*0.25f-z)*(meshGrid/16.0f)); c=max(0,min(meshGrid-1,c));
+	return (b*meshGrid+c)*meshGrid+a;
+}
+void Occlusion_BuildRanges(struct ChunkPartInfo* part,struct VertexTextured* vertices,int chunkX,int chunkY,int chunkZ) {
 	struct OcclusionRange* ranges;
 	struct VertexTextured* scratch;
-	int face,i,j,b,band,count,largest=0,offset,used=0;
-	int counts[16],starts[16],next[16];
-	float y;
+	int face,i,j,b,band,count,largest=0,offset,used=0,quads=0;
+	int counts[512],starts[512],next[512];
+	int bins=meshGrid?meshGrid*meshGrid*meshGrid:meshBands;
 	part->rangeCount=0; part->ranges=NULL;
-	if(!meshBands || part->offset<0 || part->spriteCount) return;
-	for(face=0;face<6;face++) largest=max(largest,part->counts[face]);
+	if(!bins || part->offset<0 || part->spriteCount) return;
+	for(face=0;face<6;face++) { largest=max(largest,part->counts[face]); quads+=part->counts[face]/4; }
 	if(!largest) return;
-	ranges=Mem_TryAlloc(meshBands*6,sizeof(struct OcclusionRange));
+	ranges=Mem_TryAlloc(min(bins*6,quads),sizeof(struct OcclusionRange));
 	scratch=Mem_TryAlloc(largest,sizeof(struct VertexTextured));
 	if(!ranges || !scratch) { Mem_Free(ranges); Mem_Free(scratch); return; }
 	offset=part->offset;
 	for(face=0;face<6;face++) {
 		count=part->counts[face]; Mem_Set(counts,0,sizeof(counts));
 		for(i=0;i<count;i+=4) {
-			y=0; for(j=0;j<4;j++) y+=vertices[offset+i+j].y;
-			band=Math_Floor((y*0.25f-chunkY)*(meshBands/16.0f));
-			band=max(0,min(meshBands-1,band)); counts[band]+=4;
+			band=MeshBin(vertices+offset+i,chunkX,chunkY,chunkZ); counts[band]+=4;
 		}
-		for(b=0,j=0;b<meshBands;b++) { starts[b]=next[b]=j; j+=counts[b]; }
+		for(b=0,j=0;b<bins;b++) { starts[b]=next[b]=j; j+=counts[b]; }
 		for(i=0;i<count;i+=4) {
-			y=0; for(j=0;j<4;j++) y+=vertices[offset+i+j].y;
-			band=Math_Floor((y*0.25f-chunkY)*(meshBands/16.0f)); band=max(0,min(meshBands-1,band));
+			band=MeshBin(vertices+offset+i,chunkX,chunkY,chunkZ);
 			for(j=0;j<4;j++) scratch[next[band]++]=vertices[offset+i+j];
 		}
 		if(count) Mem_Copy(vertices+offset,scratch,count*sizeof(struct VertexTextured));
-		for(b=0;b<meshBands;b++) if(counts[b]) {
+		for(b=0;b<bins;b++) if(counts[b]) {
 			ranges[used].offset=offset+starts[b]; ranges[used].count=counts[b]; ranges[used].section=2<<face;
 			RangeBounds(&ranges[used],vertices+ranges[used].offset); used++;
 		}
@@ -296,12 +318,88 @@ cc_bool Occlusion_HiddenRange(const struct OcclusionRange* r) {
 		r->maxX-r->minX+0.002f,r->maxY-r->minY+0.002f,r->maxZ-r->minZ+0.002f);
 }
 
+/* Continue an unchanged view across frames. Every partial result is safe:
+   omitted occluders simply leave additional geometry visible. */
+static void CollectHistory(struct ChunkInfo* chunks) {
+	struct FaceRef ref;
+	struct Portals* p;
+	struct MeshFace* f;
+	int i;
+	historyCount=historyCursor=0;
+	if(reuseFaces && meshOccluders) for(i=0;i<currentCount;i++) {
+		ref=currentFaces[i];
+		if(ref.chunk<0 || ref.chunk>=capacity || chunks[ref.chunk].dirty || !allowed[ref.chunk]) continue;
+		p=&portals[ref.chunk]; if(ref.face<0 || ref.face>=p->surfaceCount) continue;
+		f=&p->surfaces[ref.face]; if(!Facing(f)) continue;
+		/* This old-view test only ranks candidates. The new depth buffer is
+		   cleared and every retained face is rasterised in the current view. */
+		if(HiZ_HiddenBounds(f->x-0.001f,f->y-0.001f,f->z-0.001f,f->sx+0.002f,f->sy+0.002f,f->sz+0.002f)) continue;
+		historyFaces[historyCount++]=ref;
+	}
+	currentCount=0;
+}
+static void RememberFace(int chunk,int face) {
+	if(currentCount>=boxBudget) return;
+	currentFaces[currentCount].chunk=chunk; currentFaces[currentCount].face=face; currentCount++;
+}
+static void BuildDepth(struct ChunkInfo* chunks,struct ChunkInfo** sorted) {
+	struct ChunkInfo* c;
+	struct Portals* p;
+	struct MeshFace* surface;
+	struct SolidBox* box;
+	cc_uint64 start=Stopwatch_Measure();
+	int index,elements,x,y,z;
+	for(;historyCursor<historyCount;historyCursor++) {
+		struct FaceRef ref=historyFaces[historyCursor];
+		if(workBudgetUs && Stopwatch_ElapsedMicroseconds(start,Stopwatch_Measure())>workBudgetUs) { moreDepth=true; goto done; }
+		if(depthBoxes>=boxBudget || depthScanned>=boxBudget*16) goto complete;
+		p=&portals[ref.chunk]; surface=&p->surfaces[ref.face]; depthScanned++;
+		if(HiZ_AddFace(surface->x,surface->y,surface->z,surface->sx,surface->sy,surface->sz,surface->diagonal)) {
+			depthBoxes++; RememberFace(ref.chunk,ref.face);
+		}
+	}
+	for(;depthChunk<capacity;depthChunk++,depthFace=0) {
+		if(workBudgetUs && Stopwatch_ElapsedMicroseconds(start,Stopwatch_Measure())>workBudgetUs) {
+			moreDepth=true; goto done;
+		}
+		c=sorted[depthChunk]; index=(int)(c-chunks); p=&portals[index];
+		if(!allowed[index] || c->dirty || !p->known) continue;
+		elements=meshOccluders?p->surfaceCount:p->boxes;
+		if(!elements) continue;
+		if(p->boundsKnown && HiZ_HiddenBounds(p->minX-0.001f,p->minY-0.001f,p->minZ-0.001f,
+			p->maxX-p->minX+0.002f,p->maxY-p->minY+0.002f,p->maxZ-p->minZ+0.002f)) continue;
+		for(;depthFace<elements;depthFace++) {
+			if(depthBoxes>=boxBudget || depthScanned>=boxBudget*16) goto complete;
+			if((depthChecked++&15)==0 && workBudgetUs && Stopwatch_ElapsedMicroseconds(start,Stopwatch_Measure())>workBudgetUs) {
+				moreDepth=true; goto done;
+			}
+			if(meshOccluders) {
+				surface=&p->surfaces[depthFace]; if(!Facing(surface)) continue;
+				depthScanned++;
+				if(HiZ_HiddenBounds(surface->x-0.001f,surface->y-0.001f,surface->z-0.001f,
+					surface->sx+0.002f,surface->sy+0.002f,surface->sz+0.002f)) continue;
+				if(HiZ_AddFace(surface->x,surface->y,surface->z,surface->sx,surface->sy,surface->sz,surface->diagonal)) {
+					depthBoxes++; RememberFace(index,depthFace);
+				}
+			} else {
+				box=&p->solid[depthFace];
+				x=c->centreX-8+box->x; y=c->centreY-8+box->y; z=c->centreZ-8+box->z;
+				depthScanned++;
+				if(HiZ_AddBox(x,y,z,box->sx,box->sy,box->sz)) depthBoxes++;
+			}
+		}
+	}
+complete:
+	moreDepth=false;
+done:
+	HiZ_ProxyCount=depthBoxes; HiZ_Scanned=depthScanned;
+	HiZ_End();
+}
+
 int Occlusion_Cull(struct ChunkInfo* chunks, struct ChunkInfo** sorted, struct ChunkInfo** rendered, int count) {
 	struct ChunkInfo* c;
 	struct Portals* p;
-	struct SolidBox* box;
-	struct MeshFace* surface;
-	int i, j, x, y, z, index, face, exits, entry, bit,boxes,scanned;
+	int i, j, x, y, z, index, face, exits, entry;
 	int cx = Math_Floor(Camera.CurrentPos.x) >> 4;
 	int cy = Math_Floor(Camera.CurrentPos.y) >> 4;
 	int cz = Math_Floor(Camera.CurrentPos.z) >> 4;
@@ -311,7 +409,10 @@ int Occlusion_Cull(struct ChunkInfo* chunks, struct ChunkInfo** sorted, struct C
 	/* A noclipping camera inside an opaque block has no reliable air component. */
 	x = Math_Floor(Camera.CurrentPos.x); y = Math_Floor(Camera.CurrentPos.y); z = Math_Floor(Camera.CurrentPos.z);
 	if (World_Contains(x,y,z) && Blocks.FullOpaque[World_SafeGetBlock(x,y,z)]) return count;
-	if (cached && cachedSerial == serial && cachedWidth==Game.Width && cachedHeight==Game.Height && Mem_Equal(&cachedView,&Gfx.View,sizeof(struct Matrix)) && Mem_Equal(&cachedProjection,&Gfx.Projection,sizeof(struct Matrix))) goto filter;
+	if (cached && cachedSerial == serial && cachedWidth==Game.Width && cachedHeight==Game.Height && Mem_Equal(&cachedView,&Gfx.View,sizeof(struct Matrix)) && Mem_Equal(&cachedProjection,&Gfx.Projection,sizeof(struct Matrix))) {
+		if(hizEnabled && moreDepth) goto resume;
+		goto filter;
+	}
 	Mem_Set(state, 0, capacity * 4);
 	head = tail = 0;
 	for (i = 0; i < capacity; i++) {
@@ -364,29 +465,11 @@ int Occlusion_Cull(struct ChunkInfo* chunks, struct ChunkInfo** sorted, struct C
 	}
 spatial:
 	if (hizEnabled) {
-		HiZ_Begin(); boxes=scanned=0;
-		for (i=0;i<capacity && boxes<boxBudget && scanned<boxBudget*4;i++) {
-			c=sorted[i]; index=(int)(c-chunks);
-			if (!allowed[index] || c->dirty || !portals[index].known) continue;
-			if(meshOccluders) {
-				p=&portals[index];
-				for(bit=0;bit<p->surfaceCount && boxes<boxBudget && scanned<boxBudget*4;bit++) {
-					surface=&p->surfaces[bit]; if(!Facing(surface)) continue;
-					scanned++;
-					if(HiZ_HiddenBounds(surface->x-0.001f,surface->y-0.001f,surface->z-0.001f,
-						surface->sx+0.002f,surface->sy+0.002f,surface->sz+0.002f)) continue;
-					if(HiZ_AddFace(surface->x,surface->y,surface->z,surface->sx,surface->sy,surface->sz,surface->diagonal)) boxes++;
-				}
-				continue;
-			}
-			for (bit=0;bit<portals[index].boxes && boxes<boxBudget && scanned<boxBudget*4;bit++) {
-				box=&portals[index].solid[bit];
-				x=c->centreX-8+box->x; y=c->centreY-8+box->y; z=c->centreZ-8+box->z;
-				scanned++;
-				if (HiZ_AddBox(x,y,z,box->sx,box->sy,box->sz)) boxes++;
-			}
-		}
-		HiZ_End();
+		CollectHistory(chunks);
+		HiZ_Begin();
+		depthChunk=depthFace=depthBoxes=depthScanned=depthChecked=0;
+resume:
+		BuildDepth(chunks,sorted);
 		for (i=0;i<count;i++) {
 			c=rendered[i]; index=(int)(c-chunks);
 			p=&portals[index];

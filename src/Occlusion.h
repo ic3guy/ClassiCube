@@ -11,7 +11,7 @@ void Occlusion_Reset(void);
 void Occlusion_Invalidate(void);
 void Occlusion_Build(int index, const BlockID* padded, cc_bool allAir, cc_bool allSolid);
 void Occlusion_MeshBounds(int index, const struct VertexTextured* vertices, int count);
-void Occlusion_BuildRanges(struct ChunkPartInfo* part, struct VertexTextured* vertices, int y);
+void Occlusion_BuildRanges(struct ChunkPartInfo* part, struct VertexTextured* vertices, int x, int y, int z);
 void Occlusion_BuildSurfaces(int index, const struct VertexTextured* vertices);
 cc_bool Occlusion_HiddenRange(const struct OcclusionRange* range);
 int Occlusion_Cull(struct ChunkInfo* chunks, struct ChunkInfo** sorted, struct ChunkInfo** rendered, int count);
@@ -21,7 +21,7 @@ int Occlusion_Cull(struct ChunkInfo* chunks, struct ChunkInfo** sorted, struct C
 #define Occlusion_Invalidate()
 #define Occlusion_Build(index, padded, allAir, allSolid)
 #define Occlusion_MeshBounds(index, vertices, count)
-#define Occlusion_BuildRanges(part, vertices, y)
+#define Occlusion_BuildRanges(part, vertices, x, y, z)
 #define Occlusion_BuildSurfaces(index, vertices)
 #define Occlusion_Cull(chunks, sorted, rendered, count) (count)
 #endif

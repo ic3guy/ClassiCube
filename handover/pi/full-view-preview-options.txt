@@ -1,0 +1,19 @@
+# Optional visual prototype only. Does not meet the steady-60-FPS goal yet.
+# Merge these settings into an ISOLATED copy's options.txt, after its backup.
+viewdist=512
+gfx-minviewdist=512
+gfx-adaptiveview=false
+gfx-preserveview=true
+gfx-targetfps=60
+gfx-framepacing=true
+gfx-greedy2d=true
+gfx-farlod=true
+gfx-lodnear=24
+gfx-lodstep=3
+gfx-hizcull=false
+gfx-portalcull=false
+gfx-meshbands=0
+gfx-meshgrid=0
+gfx-flushverts=131072
+gfx-chunkbuildms=2
+fpslimit=Limit60FPS

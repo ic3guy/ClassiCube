@@ -14,6 +14,8 @@
 #include "Game.h"
 #include "Options.h"
 #include "Occlusion.h"
+#include "Greedy.h"
+#include "TerrainLOD.h"
 
 int Builder_SidesLevel, Builder_EdgeLevel;
 /* Packs an index into the 16x16x16 count array. Coordinates range from 0 to 15. */
@@ -423,6 +425,8 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
 		allSolid = ReadChunkData(x1, y1, z1, &allAir);
 	}
 
+	info->meshLod=TerrainLOD_Signature(info);
+	TerrainLOD_Prepare(chunk,x1,y1,z1,info->meshLod,&allAir,&allSolid);
 	info->allAir = allAir;
 	Occlusion_Build(World_ChunkPack(x1 >> 4, y1 >> 4, z1 >> 4), chunk, allAir, allSolid);
 	if (allAir || allSolid) return true;
@@ -475,12 +479,13 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
 		}
 	}
 
+	totalVerts=Greedy_Compact(World_ChunkPack(x1>>4,y1>>4,z1>>4),Builder_Vertices,totalVerts,x1,y1,z1);
 	Occlusion_MeshBounds(World_ChunkPack(x1>>4,y1>>4,z1>>4),Builder_Vertices,totalVerts);
 #if defined CC_BUILD_LINUX && CC_GFX_BACKEND != CC_GFX_BACKEND_GL11
 	cIndex=World_ChunkPack(x1>>4,y1>>4,z1>>4);
 	Occlusion_BuildSurfaces(cIndex,Builder_Vertices);
 	for(index=0;index<MapRenderer_1DUsedCount;index++) {
-		Occlusion_BuildRanges(&MapRenderer_PartsNormal[cIndex+index*World.ChunksCount],Builder_Vertices,y1);
+		Occlusion_BuildRanges(&MapRenderer_PartsNormal[cIndex+index*World.ChunksCount],Builder_Vertices,x1,y1,z1);
 	}
 #endif
 #if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11

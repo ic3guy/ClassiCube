@@ -57,6 +57,7 @@ int     Game_FpsLimit, Game_Vertices;
 cc_bool Game_SimpleArmsAnim;
 static float gfx_minFrameMs;
 static cc_uint64 gfx_paceEpoch;
+static cc_bool gfx_framePacing;
 static float gfx_paceTarget;
 static int gfx_paceWaitUs;
 static cc_bool autoPause;
@@ -182,6 +183,9 @@ void Game_CycleViewDistance(void) {
 }
 
 cc_bool Game_ReduceVRAM(void) {
+	/* Full-view mode must fail an allocation rather than silently shorten
+	   the distance chosen by the player. The legacy fallback is opt in. */
+	if (Options_GetBool("gfx-preserveview", true)) return false;
 	if (Game_UserViewDistance <= 16) return false;
 	Game_UserViewDistance /= 2;
 	Game_UserViewDistance = max(16, Game_UserViewDistance);
@@ -470,6 +474,7 @@ static void Game_Load(void) {
 void Game_SetFpsLimit(int method) {
 	float minFrameTime = 0;
 	Game_FpsLimit = method;
+	gfx_framePacing=Options_GetBool("gfx-framepacing",false);
 
 	switch (method) {
 	case FPS_LIMIT_144: minFrameTime = 1000/144.0f; break;
@@ -888,7 +893,7 @@ void Game_RenderFrame(void) {
 	benchSubmit = Stopwatch_Measure();
 #endif
 	Benchmark_SyncGpu();
-	if (gfx_minFrameMs != 0.0f && Adaptive_MaxDistance) {
+	if (gfx_minFrameMs != 0.0f && (Adaptive_MaxDistance || gfx_framePacing)) {
 		paceStart = Stopwatch_Measure();
 		PaceAdaptiveFPS();
 		gfx_paceWaitUs = (int)Stopwatch_ElapsedMicroseconds(paceStart, Stopwatch_Measure());
@@ -899,7 +904,7 @@ void Game_RenderFrame(void) {
 	Gfx_EndFrame();
 	Benchmark_End(render, benchDraw, benchSubmit);
 	Adaptive_Update(render, gfx_paceWaitUs);
-	if (gfx_minFrameMs != 0.0f && !Adaptive_MaxDistance) LimitFPS();
+	if (gfx_minFrameMs != 0.0f && !(Adaptive_MaxDistance || gfx_framePacing)) LimitFPS();
 }
 
 void Game_Free(void) {

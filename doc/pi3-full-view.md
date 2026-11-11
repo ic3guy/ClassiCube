@@ -1,81 +1,114 @@
 # Full view distance performance work
 
-The current requirement is 60 FPS in Normal (256x64x256) and Huge
-(512x64x512) worlds, preserving the 512-block view. The earlier adaptive-distance
-results in `pi3-performance.md` do not satisfy this requirement. The installed
-game now has both `viewdist=512` and `gfx-minviewdist=512`.
-This branch also makes adaptive distance explicitly opt in through
-`gfx-adaptiveview=true`; a frame target alone cannot enable it.
+The goal remains open: steady 60 FPS in Normal (256x64x256) and Huge
+(512x64x512), retaining the 512-block view. The installed executable and saved
+world have not been replaced by the experimental renderer.
 
-## Benchmark protocol
+## Reproducible checkpoint
 
-Run on the actual Pi's accelerated VC4 desktop OpenGL driver at 854x480. Use
-`handover/pi/run-bench.py` in the isolated benchmark directory, not the installed
-save directory. Check that `BENCH_READY` reports zero pending unbuilt meshes
-throughout the measurement and every recorded distance is 512. The runner
-rejects a changed distance for a fixed-distance test.
+Work is on branch full-view-60. Build the experimental desktop OpenGL 2
+executable with handover/pi/build-full-view.sh, from the repository root on
+the 32-bit Pi 3 OS. The script produces ClassiCube-full-view without installing
+it. A normal Linux/OpenGL 1 release build also compiles.
 
-`benchmark-preload=true` completes initial meshing before the warmup. Static
-renderer comparisons use `benchmark-freeze=true` to stop simulation and texture
-animation, with the same seed and camera. Those measure renderer capacity;
-live gameplay must also pass with simulation enabled before calling the goal
-complete. Moving-camera tests include a terrain route and an above-world orbit.
+All geometry and visibility experiments are opt in. Adaptive distance now
+requires gfx-adaptiveview=true. gfx-preserveview defaults true: allocation
+failure cannot silently halve the requested distance.
 
-For correctness comparisons, use fully loaded fixed-camera screenshots with
-frozen simulation, comparing optimisation flags off and on. Include underground
-rooms, glass, a shaft open to the sky, and an outside-world camera. Do not use
-screenshot frames as performance evidence. Never compile during measurements.
+## Measured results
 
-## Experiments
+These are actual accelerated VC4 measurements at 854x480 and distance 512,
+with seed 12345 unless stated otherwise. They are exploration results, not a
+release certification. Each listed run reported zero initially missing meshes.
 
-All new rendering flags default off. The production executable has not been
-replaced by these experiments.
+| Run | Scene / mode | FPS | p95 frame ms |
+| --- | --- | ---: | ---: |
+| greedy6-normal-spawn | Frozen Normal static renderer | 88.16 | See raw JSON |
+| greedy7-huge-spawn | Frozen Huge static renderer | 47.93 | 21.23 |
+| greedy10-normal-walk | Frozen Normal movement | 45.56 | 25.79 |
+| greedy10-huge-walk-budget6 | Frozen Huge movement | 24.30 | 64.03 |
+| lod5-normal-live-walk | Live Normal, optional distant detail, capped 60 | 59.80 | 22.11 |
+| lod5-huge-live-walk | Live Huge, optional distant detail, capped 60 | 36.36 | 39.66 |
+| lod5-huge-live-seed2 | Live Huge, seed 22222, optional distant detail | 31.55 | 41.90 |
+| lod5-huge-live-orbit | Live Huge aerial route, optional distant detail | 18.58 | 58.79 |
 
-* `gfx-flushverts`: optional OpenGL job boundaries after this many submitted
-  terrain vertices. Very large unsplit full-distance scenes cause repeated VC4
-  GPU resets on this Pi; splitting jobs avoids that stall while retaining all
-  geometry and framebuffer contents.
-* `gfx-portalcull`: conservative chunk portal connectivity, treating unknown or
-  dirty data as transparent. It brought little benefit in generated worlds.
-* `gfx-hizcull`, `gfx-hizboxes`: conservative software occlusion. Guaranteed-solid
-  cuboids rasterise coverage at framebuffer pixel centres into 4x4 tile masks.
-  Combined partial masks use a farthest-depth bound. The camera's current view
-  and mesh bounds are used; the view distance is unchanged. Unknown, dirty,
-  near-plane-crossing, and ambiguous camera cases fall back to drawing.
-* `gfx-hizmesh`: use actual opaque terrain faces as occluders. This resolved
-  small image differences found with volume proxies and fine mesh bands.
-  `gfx-hizvc4` additionally tests the VC4's signed 12.4 coordinate conversion.
-* `gfx-meshbands`: optional height bands of opaque mesh faces, allowing a hidden
-  underground portion to be skipped even when its chunk extends above ground.
-  Cutout and translucent face order is retained.
+Settings, binary hashes, warmups, durations, frame distributions and raw logs
+are preserved in the progress-results archive. The table includes different
+experimental configurations; use each run's settings when reproducing it.
+The live Huge walking test used a 30-second warmup and 30-second measurement.
+Normal averaged approximately 60 but still had frame-time spikes.
 
-The first full-resolution depth implementation cost too much CPU time during
-movement. Tile masks reduce storage and per-pixel work. Tight mesh bounds and
-smaller solid proxies improved a frozen Normal scene from 27.51 to 75.67 FPS
-uncapped. The corresponding Huge result was 20.39 FPS. The aerial results were
-still only 15.05 FPS (Normal) and 5.77 FPS (Huge), so the objective remains open.
-These are exploration runs `fv5-normal-base` and `fv6-gl1-*`, using full distance,
-seed 12345, 5 seconds of warmup, and 10 seconds of measurement.
+An earlier distant-detail prototype reached 77.93 FPS for a frozen Huge
+walking route. Its boundary-face optimisation was removed because neighbouring
+detail changes and teleportation need stronger synchronisation to avoid cracks.
+That speed does not describe the current safer prototype or live gameplay.
 
-An occupancy flood-fill found that sealed spaces account for only about 14-16%
-of opaque faces adjacent to nonopaque space in these generated worlds. Removing
-only sealed caves cannot deliver the needed gain. The remaining work targets
-actual occlusion and geometry submission, with live simulation checks afterward.
+## Implemented experiments
 
-## Correctness checkpoint
+- gfx-greedy2d: merge compatible opaque faces in two dimensions. Texture repeats
+  in both directions through an OpenGL 2 shader. Uniform lighting and material
+  must match; partial blocks and light gradients retain their geometry.
+  The Pi lacks explicit texture-gradient shader support, so mipmaps enable a
+  fallback to original meshes. Generated-world vertex savings were about 12%;
+  a simple fixture dropped from 2768 to 492 vertices.
+- gfx-flushverts: bound submitted terrain vertices per OpenGL job without
+  discarding geometry. Large unsplit workloads caused VC4 allocation failures
+  and GPU resets. Splitting jobs completed the full-distance tests.
+- gfx-hizcull / gfx-hizmesh: software visibility using actual opaque mesh faces,
+  framebuffer sample coverage masks, and conservative depth bounds.
+- gfx-meshgrid / gfx-meshbands: group opaque faces spatially for visibility
+  checks. Cutout and transparent geometry retain their ordering.
+- gfx-hizbudgetus / gfx-hizreuse: limit depth-buffer construction and optionally
+  reuse blocker candidates, rasterising them again for the current camera.
+- gfx-hizvc4 / gfx-hizflatdepth / gfx-hizplanedepth / gfx-hizraybounds /
+  gfx-hizraycache / gfx-hizrayexit: optional coverage and depth experiments.
+  Occluders crossing the camera plane are clipped to an inset visible polygon.
+  Queries crossing the near plane remain visible.
+- gfx-multidraw: optional OpenGL multiple-range submission with a regular-draw
+  fallback. More spatial groups and fewer API calls did not improve Huge play.
+- gfx-framepacing: allow deadline pacing before swap with a fixed view distance.
+  Its default is off; it does not enable adaptive distance.
+- gfx-farlod: optional distant geometry prototype. The real block array,
+  collision and saved world remain unchanged. Nearby chunk meshes use original
+  blocks; farther meshes sample 2-, 4-, or 8-block cells. gfx-lodnear controls
+  the nearby region, measured to chunk centres. gfx-lodstep=3 selects 8-block
+  cells outside that region. Trees, thin structures, cave openings, colours
+  and silhouettes can change at distance. This is a visible quality tradeoff,
+  not an exact-image optimisation.
 
-The actual-face variant passed five within-process A/B comparisons: an open
-shaft, Normal spawn and aerial views, and Huge spawn and aerial views. All five
-images had zero differing pixels (`visual11-*` and `visual12-*`). The simulation
-and camera were frozen, and initial meshing was complete. Earlier volume-proxy
-and fine-band variants failed at a shaft edge and are not suitable for installing
-with those settings.
+The distant-detail prototype keeps chunk volumes closed during asynchronous
+updates, including teleportation. Detail refreshes respect the frame budget;
+block-edit refreshes retain their existing priority. It remains experimental.
+The supplied full-view-preview-options.txt is for an isolated test copy only.
 
-These conservative variants remain too slow during movement. The next work is
-reducing the terrain mesh itself. Larger unsplit workloads also exhaust VC4 GPU
-allocation space; 65,536-vertex job boundaries completed the Huge A/B checks.
-The source and benchmarks remain experimental; no replacement was installed.
+## Validation and remaining issues
 
-The VC4 coordinate experiment was checked against Mesa's
-[coordinate shader implementation](https://fuchsia.googlesource.com/third_party/mesa/+/refs/tags/gitlab/mesa-22.3.6/src/gallium/drivers/vc4/vc4_program.c).
-It did not produce a useful moving-frame speedup in the tested scenes.
+The benchmark completes initial meshing before warmup. Moving routes remain
+stationary during this preparation. BENCH_READY counts meshes never built or
+explicitly deleted; a detail refresh can keep its already-built previous mesh.
+Every recorded distance must equal 512.
+
+benchmark-freeze=true disables simulation, animation and HUD. Those runs measure
+renderer capacity. Live tests keep simulation and HUD enabled. Screenshot runs
+are separate and must not be used as performance evidence. No compilation ran
+during the listed measurements.
+
+Earlier actual-face culling configurations passed five image comparisons with
+zero differing pixels. The latest expanded greedy10 suite passed 10 of 11:
+Normal static/aerial/movement, Huge static/movement, shaft, mining opening and
+closing, glass and outside-world views. Huge aerial differed by one pixel.
+Therefore the current visibility experiments remain disabled in the supplied
+distant-detail preview settings.
+
+verify-full-view.py reproduces the image checks and fails on any difference.
+Its comparison holds geometry constant and toggles visibility only. Comparing
+the distant-detail prototype against full detail intentionally changes images;
+the exported preview pictures show that tradeoff.
+
+The next work is profiling live singleplayer tasks and mesh refreshes, reducing
+the cost of closed boundary faces while preserving safe transitions, and
+checking distant-detail appearance and mining/teleport behaviour. A 60 FPS
+renderer-only average does not finish the goal.
+
+The historical adaptive-distance measurements in pi3-performance.md do not
+satisfy the current requirement.

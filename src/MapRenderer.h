@@ -48,6 +48,7 @@ struct ChunkPartInfo {
 /* Describes data necessary for rendering a chunk. */
 struct ChunkInfo {	
 	cc_uint16 centreX, centreY, centreZ; /* Centre coordinates of the chunk */
+	cc_uint16 meshLod; /* Optional geometry detail and closed boundary mode */
 
 	cc_uint8 visible : 1; /* Whether chunk is visible to the player */
 	cc_uint8 empty   : 1; /* Whether chunk is empty of data and is known to have no data */
@@ -55,6 +56,8 @@ struct ChunkInfo {
 	cc_uint8 allAir  : 1; /* Whether chunk is completely air */
 	cc_uint8 noData  : 1; /* Whether chunk is currently empty of data, but may have data if built */
 	cc_uint8 skipClip: 1; /* Whether chunk can skip GPU backend clipping (see CC_CLIPPING_FLAGS) */
+	cc_uint8 lodDirty: 1; /* Geometry detail refresh, subject to the frame budget */
+	cc_uint8 meshReady: 1; /* An initial mesh, including an empty mesh, has been built */
 	cc_uint8 : 0;         /* pad to next byte*/
 
 	cc_uint8 drawXMin : 1;
