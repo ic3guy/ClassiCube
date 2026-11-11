@@ -49,6 +49,8 @@ def run(name, settings):
     ready=re.search(r'BENCH_READY max_pending=(\d+) last_pending=(\d+)',text)
     heights={m[0]:int(m[1]) for m in re.findall(r'BENCH_HEIGHT y=(\d+) submitted_vertices=(\d+)',text)}
     meshes=re.search(r'BENCH_MESH before_vertices=(\d+) after_vertices=(\d+)',text)
+    tasks=re.search(r'^BENCH_TASKS (.*)$',text,re.M)
+    atlas=re.search(r'^BENCH_ATLAS (.*)$',text,re.M)
     hiz=re.search(r'^BENCH_HIZ (.*)$',text,re.M)
     if int(options.get('gfx-minviewdist',0))>=int(options['viewdist']):
         assert all(r[8]==int(options['viewdist']) for r in rows), 'View distance changed during fixed-distance test'
@@ -69,6 +71,8 @@ def run(name, settings):
               'ready':{'max_pending':int(ready[1]),'last_pending':int(ready[2])} if ready else None,
               'submitted_vertices_by_y':heights,
               'mesh_vertices':{'before':int(meshes[1]),'after':int(meshes[2])} if meshes else None,
+              'tasks_us':{k:float(v) for k,v in re.findall(r'(\w+)=([\d.]+)',tasks[1])} if tasks else None,
+              'atlas_check':{k:int(v) for k,v in re.findall(r'(\w+)=(\d+)',atlas[1])} if atlas else None,
               'hiz':{k:int(v) if v.isdigit() else v for k,v in re.findall(r'(\w+)=([^ ]+)',hiz[1])} if hiz else None,
               'screenshots':[str(p) for p in sorted((cwd/'screenshots').glob('*.png')) if p.stat().st_mtime>=started_at]}
     (ROOT/'results'/f'{name}.json').write_text(json.dumps(result,indent=2)+'\n')

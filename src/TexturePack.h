@@ -78,6 +78,10 @@ cc_bool Atlas_TryChange(struct Bitmap* bmp);
 /* index is set to the index of the 1D atlas that the tile is in. */
 TextureRec Atlas1D_TexRec(TextureLoc texLoc, int uCount, int* index);
 void Atlas1D_Bind(int index);
+/* Optional desktop GL atlas replacement for animation updates. */
+cc_bool Atlas1D_QueueAnimation(int index,int y,struct Bitmap* part,int stride);
+void Atlas1D_FlushAnimations(void);
+cc_bool Atlas1D_VerifyAnimations(void);
 
 /* Whether the given URL is in list of accepted URLs. */
 cc_bool TextureUrls_HasAccepted(const cc_string* url);

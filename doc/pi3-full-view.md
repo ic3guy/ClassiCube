@@ -1,5 +1,7 @@
 # Full view distance performance work
 
+> Superseded target: the user selected Normal-world 60 FPS as the release goal. See [the Normal release](pi3-normal60.md). The Huge measurements and experiments below remain historical.
+
 The goal remains open: steady 60 FPS in Normal (256x64x256) and Huge
 (512x64x512), retaining the 512-block view. The installed executable and saved
 world have not been replaced by the experimental renderer.

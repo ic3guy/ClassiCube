@@ -8,6 +8,7 @@
 #include "Graphics.h"
 #include "Greedy.h"
 #include "TexturePack.h"
+#include "PackedCol.h"
 
 static cc_bool enabled;
 static int nearDistance,farStep;
@@ -67,6 +68,10 @@ void TerrainLOD_Prepare(BlockID* padded,int x,int y,int z,cc_uint16 signature,cc
 		if(level && World_Contains(wx,wy,wz)) {
 			sx=(xx+step)>>level; sy=(yy+step)>>level; sz=(zz+step)>>level;
 			id=samples[(sy*side+sz)*side+sx];
+			/* Grass belongs on the exposed top layer, rather than every row
+			   of an enlarged cell's vertical sides. Use the unclipped neighbour
+			   sample so chunk-boundary closure does not add grass stripes. */
+			if(id==BLOCK_GRASS && Blocks.FullOpaque[samples[((((yy+1+step)>>level)*side+sz)*side+sx)]]) id=BLOCK_DIRT;
 		}
 		/* Close chunk volumes independently, including during asynchronous
 		   detail transitions. Neighbours can retain their previous meshes
@@ -75,6 +80,22 @@ void TerrainLOD_Prepare(BlockID* padded,int x,int y,int z,cc_uint16 signature,cc
 		padded[index]=id;
 		*allAir=*allAir && Blocks.Draw[id]==DRAW_GAS;
 		*allSolid=*allSolid && Blocks.FullOpaque[id];
+	}
+}
+void TerrainLOD_ColorFaces(int index,struct VertexTextured* vertices) {
+	struct ChunkPartInfo* part; int batch,face,i,offset;
+	PackedCol colors[6]={Env.SunXSide,Env.SunXSide,Env.SunZSide,Env.SunZSide,Env.SunYMin,Env.SunCol};
+	/* The coarse surface does not share the original fine heightmap. Use
+	   directional environment lighting so a single enlarged face is not
+	   fragmented by shadows belonging to the replaced fine geometry. */
+	for(batch=0;batch<MapRenderer_1DUsedCount;batch++) {
+		part=&MapRenderer_PartsNormal[index+batch*World.ChunksCount];
+		if(part->offset<0) continue;
+		offset=part->offset+part->spriteCount;
+		for(face=0;face<6;face++) {
+			for(i=0;i<part->counts[face];i++) vertices[offset+i].Col=colors[face];
+			offset+=part->counts[face];
+		}
 	}
 }
 #endif

@@ -14,6 +14,7 @@
 #include "Vectors.h"
 #include "Chat.h"
 #include "Audio.h"
+#include "Benchmark.h"
 
 /* Data for a resizable queue, used for liquid physic tick entries. */
 struct TickQueue {
@@ -566,12 +567,31 @@ void Physics_Free(void) {
 }
 
 void Physics_Tick(void) {
+#ifdef CC_BUILD_LINUX
+	cc_uint64 start=0,water=0,random=0;
+#endif
 	if (!Physics.Enabled || !World.Blocks) return;
 
 	/*if ((tickCount % 5) == 0) {*/
+#ifdef CC_BUILD_LINUX
+	if(Benchmark_Mode) start=Stopwatch_Measure();
+#endif
 	Physics_TickLava();
+#ifdef CC_BUILD_LINUX
+	if(Benchmark_Mode) water=Stopwatch_Measure();
+#endif
 	Physics_TickWater();
+#ifdef CC_BUILD_LINUX
+	if(Benchmark_Mode) random=Stopwatch_Measure();
+#endif
 	/*}*/
 	physics_tickCount++;
 	Physics_TickRandomBlocks();
+#ifdef CC_BUILD_LINUX
+	if(Benchmark_Mode) {
+		Benchmark_PhysicsUs[0]+=(int)Stopwatch_ElapsedMicroseconds(start,water);
+		Benchmark_PhysicsUs[1]+=(int)Stopwatch_ElapsedMicroseconds(water,random);
+		Benchmark_PhysicsUs[2]+=(int)Stopwatch_ElapsedMicroseconds(random,Stopwatch_Measure());
+	}
+#endif
 }

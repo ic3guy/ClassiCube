@@ -1,0 +1,26 @@
+# Merge into existing options; benchmark options must remain unset.
+sp-worldsize=256
+viewdist=512
+gfx-minviewdist=512
+gfx-adaptiveview=false
+gfx-preserveview=true
+gfx-targetfps=60
+gfx-chunkbuildms=2
+gfx-flushverts=131072
+gfx-greedy2d=true
+gfx-farlod=true
+gfx-lodnear=48
+gfx-lodstep=3
+gfx-atlasstream=true
+gfx-framepacing=true
+gfx-mipmaps=false
+gfx-hizcull=false
+gfx-portalcull=false
+gfx-multidraw=false
+gfx-meshbands=0
+gfx-meshgrid=0
+fpslimit=Limit60FPS
+window-width=854
+window-height=480
+window-fullscreen=false
+viewbobbing=false

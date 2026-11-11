@@ -256,7 +256,7 @@ static void Animations_Update(int texLoc, struct Bitmap* bmp, int stride) {
 	GfxResourceID tex;
 
 	tex = Atlas1D.TexIds[dstX];
-	if (tex) Gfx_UpdateTexture(tex, 0, dstY, bmp, stride, Gfx.Mipmaps);
+	if (tex && !Atlas1D_QueueAnimation(dstX,dstY,bmp,stride)) Gfx_UpdateTexture(tex, 0, dstY, bmp, stride, Gfx.Mipmaps);
 }
 
 static void Animations_Apply(struct AnimationData* data) {
@@ -334,7 +334,7 @@ static void Animations_Validate(void) {
 	}
 }
 
-static cc_bool Animations_Tick(struct ScheduledTask2* task) {
+static cc_bool Animations_TickCore(struct ScheduledTask2* task) {
 	int i;
 #ifndef CC_BUILD_WEB
 	if (useLavaAnim)  LavaAnimation_Tick();
@@ -354,6 +354,12 @@ static cc_bool Animations_Tick(struct ScheduledTask2* task) {
 		Animations_Apply(&anims_list[i]);
 	}
 	return true;
+}
+
+static cc_bool Animations_Tick(struct ScheduledTask2* task) {
+	cc_bool result=Animations_TickCore(task);
+	Atlas1D_FlushAnimations();
+	return result;
 }
 
 

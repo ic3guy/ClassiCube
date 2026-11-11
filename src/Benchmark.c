@@ -13,6 +13,7 @@
 #include "Block.h"
 #include "BlockPhysics.h"
 #include "HiZ.h"
+#include "TexturePack.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -21,6 +22,13 @@ int Benchmark_Pending = -1;
 cc_bool Benchmark_Preloading;
 cc_bool Benchmark_DisableOcclusion;
 int Benchmark_MeshBefore,Benchmark_MeshAfter;
+int Benchmark_PhysicsUs[3];
+static int taskUs[5];
+static double taskTotals[5],physicsTotals[3];
+void Benchmark_RecordTask(struct ScheduledTask2* task,int microseconds) {
+	int i=!task?4:task==&Game_Tasks.network?0:task==&Game_Tasks.entities?1:task==&Game_Tasks.anims?2:3;
+	taskUs[i]+=microseconds;
+}
 static cc_bool compareImages;
 static int comparePhase;
 static int maxPending;
@@ -173,6 +181,7 @@ void Benchmark_Position(void) {
 }
 
 void Benchmark_Begin(void) {
+	Mem_Set(taskUs,0,sizeof(taskUs)); Mem_Set(Benchmark_PhysicsUs,0,sizeof(Benchmark_PhysicsUs));
 	Benchmark_Draws = 0;
 	Benchmark_BuildUs = 0;
 	Benchmark_PacingUs = 0;
@@ -208,6 +217,8 @@ void Benchmark_End(cc_uint64 start, cc_uint64 draw, cc_uint64 submit) {
 	if (count < MAX_SAMPLES && previous) {
 		if (Benchmark_Pending > maxPending) maxPending = Benchmark_Pending;
 		for (i = 0; i < 64; i++) heightTotals[i] += heightVertices[i];
+		for(i=0;i<5;i++) taskTotals[i]+=taskUs[i];
+		for(i=0;i<3;i++) physicsTotals[i]+=Benchmark_PhysicsUs[i];
 		s = &samples[count++];
 		s->frame    = (int)Stopwatch_ElapsedMicroseconds(previous, end);
 		s->logic    = (int)Stopwatch_ElapsedMicroseconds(start, draw);
@@ -226,7 +237,10 @@ void Benchmark_End(cc_uint64 start, cc_uint64 draw, cc_uint64 submit) {
 	printf("BENCH_CSV frame_us,logic_us,draw_us,wait_us,present_us,build_us,draws,vertices,distance\n");
 	printf("BENCH_READY max_pending=%d last_pending=%d\n", maxPending, Benchmark_Pending);
 	printf("BENCH_MESH before_vertices=%d after_vertices=%d\n",Benchmark_MeshBefore,Benchmark_MeshAfter);
+	printf("BENCH_TASKS network_us=%.1f entities_us=%.1f anims_us=%.1f other_us=%.1f lava_us=%.1f water_us=%.1f random_us=%.1f mesh_us=%.1f\n",
+		taskTotals[0]/count,taskTotals[1]/count,taskTotals[2]/count,taskTotals[3]/count,physicsTotals[0]/count,physicsTotals[1]/count,physicsTotals[2]/count,taskTotals[4]/count);
 	HiZ_LogStats();
+	if(!Atlas1D_VerifyAnimations()) Process_Abort("Animated atlas comparison failed");
 	for (i = 0; i < 64; i++) if (heightTotals[i]) printf("BENCH_HEIGHT y=%d submitted_vertices=%.0f\n",i*16,heightTotals[i]/count);
 	for (i = 0; i < count; i++) {
 		s = &samples[i];

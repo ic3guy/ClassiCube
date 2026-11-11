@@ -541,10 +541,20 @@ static void DeleteChunk(struct ChunkInfo* chunk) {
 static void BuildChunk(struct ChunkInfo* chunk, int* chunkUpdates) {
 	struct ChunkPartInfo* ptr;
 	int i;
+#ifdef CC_BUILD_LINUX
+	cc_uint64 profileStart=0; cc_bool built;
+#endif
 
 	Game.ChunkUpdates++;
 	(*chunkUpdates)++;
+#ifdef CC_BUILD_LINUX
+	if(Benchmark_Mode) profileStart=Stopwatch_Measure();
+	built=Builder_MakeChunk(chunk);
+	if(Benchmark_Mode) Benchmark_RecordTask(NULL,(int)Stopwatch_ElapsedMicroseconds(profileStart,Stopwatch_Measure()));
+	if(!built) return;
+#else
 	if (!Builder_MakeChunk(chunk)) return;
+#endif
 
 	chunk->dirty  = false;
 	chunk->meshReady = true;
@@ -747,9 +757,9 @@ static int deferredCount;
 static cc_bool CanBuildChunk(struct ChunkInfo* chunk, int chunkUpdates) {
 	int elapsed;
 	if (chunkUpdates >= chunksTarget) return false;
-	/* Chunks that already have a mesh are being rebuilt because their blocks changed, */
-	/*  so are rebuilt straight away to avoid e.g. brief holes at the edges of chunks */
-	if (!chunk->noData && !chunk->lodDirty) return true;
+	/* Keep nearby block edits immediate. Closed distant meshes can retain
+	   their previous version while their refresh respects the frame budget. */
+	if (!chunk->noData && !chunk->lodDirty && !(chunk->meshLod&3)) return true;
 
 	if (buildBudgetSpent) return false;
 	/* Always build at least one chunk per frame, so that progress is always made */

@@ -16,6 +16,7 @@
 #include "Utils.h"
 #include "Chat.h" /* TODO avoid this include */
 #include "Errors.h"
+#include <stdio.h>
 
 /* Simple fallback terrain for when no texture packs are available at all */
 static BitmapCol fallback_terrain[16 * 8] = {
@@ -66,6 +67,62 @@ struct _Atlas2DData Atlas2D;
 struct _Atlas1DData Atlas1D;
 int TexturePack_ReqID;
 
+#if defined CC_BUILD_LINUX && CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+static struct Bitmap animationCopies[ATLAS1D_MAX_ATLASES];
+static cc_bool animationDirty[ATLAS1D_MAX_ATLASES];
+static GfxResourceID retiredAtlases[ATLAS1D_MAX_ATLASES][3];
+static cc_uint8 retiredCursor[ATLAS1D_MAX_ATLASES];
+static GfxResourceID referenceAtlases[ATLAS1D_MAX_ATLASES];
+static int animationReferenceUpdates;
+extern cc_bool Gfx_CompareTexturePixels(GfxResourceID a,GfxResourceID b,int width,int height);
+#endif
+cc_bool Atlas1D_QueueAnimation(int index,int y,struct Bitmap* part,int stride) {
+#if defined CC_BUILD_LINUX && CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+	struct Bitmap* copy; int row;
+	if(index<0 || index>=Atlas1D.Count) return false;
+	copy=&animationCopies[index];
+	if(!copy->scan0 || y<0 || y+part->height>copy->height || part->width>copy->width) return false;
+	if(referenceAtlases[index]) {
+		Gfx_UpdateTexture(referenceAtlases[index],0,y,part,stride,Gfx.Mipmaps); animationReferenceUpdates++;
+	}
+	for(row=0;row<part->height;row++) Mem_Copy(copy->scan0+(y+row)*copy->width,part->scan0+row*stride,part->width*sizeof(BitmapCol));
+	animationDirty[index]=true; return true;
+#else
+	return false;
+#endif
+}
+cc_bool Atlas1D_VerifyAnimations(void) {
+#if defined CC_BUILD_LINUX && CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+	int i,compared=0; cc_bool equal=true;
+	if(!Options_GetBool("benchmark-atlascompare",false)) return true;
+	for(i=0;i<Atlas1D.Count;i++) if(referenceAtlases[i]) {
+		compared++;
+		if(!Gfx_CompareTexturePixels(referenceAtlases[i],Atlas1D.TexIds[i],animationCopies[i].width,animationCopies[i].height)) equal=false;
+	}
+	if(!compared || !animationReferenceUpdates) equal=false;
+	printf("BENCH_ATLAS compared=%d updates=%d equal=%d\n",compared,animationReferenceUpdates,equal);
+	return equal;
+#else
+	return true;
+#endif
+}
+void Atlas1D_FlushAnimations(void) {
+#if defined CC_BUILD_LINUX && CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+	GfxResourceID replacement; int i,cursor;
+	if(Gfx.LostContext) return;
+	for(i=0;i<Atlas1D.Count;i++) {
+		if(!animationDirty[i]) continue;
+		/* Write fresh storage while older atlas versions remain available to
+		   in-flight terrain jobs. Apply all animation tiles in one upload. */
+		replacement=Gfx_CreateTexture(&animationCopies[i],TEXTURE_FLAG_MANAGED|TEXTURE_FLAG_DYNAMIC,Gfx.Mipmaps);
+		if(!replacement) continue;
+		cursor=retiredCursor[i]; Gfx_DeleteTexture(&retiredAtlases[i][cursor]);
+		retiredAtlases[i][cursor]=Atlas1D.TexIds[i]; Atlas1D.TexIds[i]=replacement;
+		retiredCursor[i]=(cursor+1)%3; animationDirty[i]=false;
+	}
+#endif
+}
+
 TextureRec Atlas1D_TexRec(TextureLoc texLoc, int uCount, int* index) {
 	TextureRec rec;
 	int y  = Atlas1D_RowId(texLoc);
@@ -95,6 +152,15 @@ static void Atlas1D_Load(int index, struct Bitmap* atlas1D) {
 							&Atlas2D.Bmp, atlas1D, tileSize);
 	}
 	Gfx_RecreateTexture(&Atlas1D.TexIds[index], atlas1D, TEXTURE_FLAG_MANAGED | TEXTURE_FLAG_DYNAMIC, Gfx.Mipmaps);
+#if defined CC_BUILD_LINUX && CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+	if(Options_GetBool("gfx-atlasstream",false) && atlas1D->width*atlas1D->height<=1048576) {
+		animationCopies[index]=*atlas1D;
+		animationCopies[index].scan0=Mem_TryAlloc(atlas1D->width*atlas1D->height,sizeof(BitmapCol));
+		if(animationCopies[index].scan0) Mem_Copy(animationCopies[index].scan0,atlas1D->scan0,atlas1D->width*atlas1D->height*sizeof(BitmapCol));
+		if(animationCopies[index].scan0 && Options_GetInt("benchmark-mode",0,3,0) && Options_GetBool("benchmark-atlascompare",false))
+			referenceAtlases[index]=Gfx_CreateTexture(atlas1D,TEXTURE_FLAG_MANAGED|TEXTURE_FLAG_DYNAMIC,Gfx.Mipmaps);
+	}
+#endif
 }
 
 /* TODO: always do this? */
@@ -204,6 +270,13 @@ static void Atlas1D_Free(void) {
 	int i;
 	for (i = 0; i < Atlas1D.Count; i++) {
 		Gfx_DeleteTexture(&Atlas1D.TexIds[i]);
+#if defined CC_BUILD_LINUX && CC_GFX_BACKEND == CC_GFX_BACKEND_GL2
+		int j;
+		Mem_Free(animationCopies[i].scan0); animationCopies[i].scan0=NULL;
+		animationDirty[i]=false; retiredCursor[i]=0;
+		for(j=0;j<3;j++) Gfx_DeleteTexture(&retiredAtlases[i][j]);
+		Gfx_DeleteTexture(&referenceAtlases[i]);
+#endif
 	}
 }
 

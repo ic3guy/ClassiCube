@@ -799,6 +799,18 @@ void Gfx_DrawIndexedTris_T2fC4b(int verticesCount, int startVertex, DrawHints hi
 	}
 }
 #ifdef CC_BUILD_LINUX
+cc_bool Gfx_CompareTexturePixels(GfxResourceID a,GfxResourceID b,int width,int height) {
+	void (APIENTRY *readTexture)(GLenum,GLint,GLenum,GLenum,void*);
+	void *first,*second; cc_bool equal;
+	readTexture=(void*)GLContext_GetAddress("glGetTexImage");
+	if(!readTexture) return false;
+	first=Mem_TryAlloc(width*height,4); second=Mem_TryAlloc(width*height,4);
+	if(!first || !second) { Mem_Free(first); Mem_Free(second); return false; }
+	setTexture(a); readTexture(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,first);
+	setTexture(b); readTexture(GL_TEXTURE_2D,0,GL_RGBA,GL_UNSIGNED_BYTE,second);
+	equal=Mem_Equal(first,second,width*height*4);
+	Mem_Free(first); Mem_Free(second); return equal;
+}
 cc_bool Gfx_DrawTerrainRanges(int count,const int* lengths,const int* starts) {
 	GLsizei counts[512]; const void* offsets[512]; int i,total=0;
 	if(!terrainMultiDraw || count<2 || count>512) return false;

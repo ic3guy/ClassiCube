@@ -479,6 +479,7 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
 		}
 	}
 
+	if(info->meshLod&3) TerrainLOD_ColorFaces(World_ChunkPack(x1>>4,y1>>4,z1>>4),Builder_Vertices);
 	totalVerts=Greedy_Compact(World_ChunkPack(x1>>4,y1>>4,z1>>4),Builder_Vertices,totalVerts,x1,y1,z1);
 	Occlusion_MeshBounds(World_ChunkPack(x1>>4,y1>>4,z1>>4),Builder_Vertices,totalVerts);
 #if defined CC_BUILD_LINUX && CC_GFX_BACKEND != CC_GFX_BACKEND_GL11

@@ -1,5 +1,7 @@
 # Handover: ClassiCube at 60fps on a Raspberry Pi 3
 
+> Current release target: stable 60 FPS in Normal worlds with the full 512-block view. The user approved simpler distant geometry and installation on the Pi. See [Normal release and validation](doc/pi3-normal60.md). Huge-world work is parked.
+
 > Current requirement: **preserve the full 512-block view** while working toward
 > 60 FPS in Normal and Huge worlds. Adaptive fog/distance is no longer an accepted
 > solution. See [full-view experiments and validation](doc/pi3-full-view.md).

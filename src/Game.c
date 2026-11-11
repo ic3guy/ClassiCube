@@ -583,13 +583,22 @@ static void Render3D_Anaglyph(float delta, float t) {
 static void PerformScheduledTasks(float time) {
 	struct ScheduledTask2* task = tasks_head;
 	struct ScheduledTask2* next;
+#ifdef CC_BUILD_LINUX
+	cc_uint64 profileStart=0;
+#endif
 
 	while (task) {
 		task->accumulator += time;
 		next = task->next; /* cache in case callback removes task */
 
 		while (task->accumulator >= task->interval) {
+#ifdef CC_BUILD_LINUX
+			if(Benchmark_Mode) profileStart=Stopwatch_Measure();
+#endif
 			task->callback(task);
+#ifdef CC_BUILD_LINUX
+			if(Benchmark_Mode) Benchmark_RecordTask(task,(int)Stopwatch_ElapsedMicroseconds(profileStart,Stopwatch_Measure()));
+#endif
 			task->accumulator -= task->interval;
 		}
 		task = next;
