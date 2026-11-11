@@ -13,6 +13,7 @@
 #include "TexturePack.h"
 #include "Game.h"
 #include "Options.h"
+#include "Occlusion.h"
 
 int Builder_SidesLevel, Builder_EdgeLevel;
 /* Packs an index into the 16x16x16 count array. Coordinates range from 0 to 15. */
@@ -423,6 +424,7 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
 	}
 
 	info->allAir = allAir;
+	Occlusion_Build(World_ChunkPack(x1 >> 4, y1 >> 4, z1 >> 4), chunk, allAir, allSolid);
 	if (allAir || allSolid) return true;
 	Lighting.LightHint(x1 - 1, y1 - 1, z1 - 1);
 
@@ -473,6 +475,14 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
 		}
 	}
 
+	Occlusion_MeshBounds(World_ChunkPack(x1>>4,y1>>4,z1>>4),Builder_Vertices,totalVerts);
+#if defined CC_BUILD_LINUX && CC_GFX_BACKEND != CC_GFX_BACKEND_GL11
+	cIndex=World_ChunkPack(x1>>4,y1>>4,z1>>4);
+	Occlusion_BuildSurfaces(cIndex,Builder_Vertices);
+	for(index=0;index<MapRenderer_1DUsedCount;index++) {
+		Occlusion_BuildRanges(&MapRenderer_PartsNormal[cIndex+index*World.ChunksCount],Builder_Vertices,y1);
+	}
+#endif
 #if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
 	cIndex = World_ChunkPack(x1 >> CHUNK_SHIFT, y1 >> CHUNK_SHIFT, z1 >> CHUNK_SHIFT);
 

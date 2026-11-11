@@ -14,6 +14,8 @@ static cc_uint64 previousFrame;
 
 void Adaptive_Init(void) {
 	targetFPS   = Options_GetInt("gfx-targetfps", 0, 240, 0);
+	/* A frame target must not silently shorten the user's chosen view. */
+	if (!Options_GetBool("gfx-adaptiveview", false)) targetFPS = 0;
 	minDistance = Options_GetInt("gfx-minviewdist", 16, 512, 32);
 	totalMs = totalWorkMs = 0;
 	frames = slowFrames = fastWindows = 0;

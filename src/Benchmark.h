@@ -4,6 +4,10 @@
 /* Opt-in Linux/OpenGL diagnostic. Disabled unless benchmark-mode is set. */
 #ifdef CC_BUILD_LINUX
 extern int Benchmark_Mode, Benchmark_Draws, Benchmark_BuildUs, Benchmark_PacingUs;
+extern int Benchmark_Pending;
+extern cc_bool Benchmark_Preloading;
+extern cc_bool Benchmark_DisableOcclusion;
+void Benchmark_RecordDraw(int worldY, int vertices);
 void Benchmark_Init(void);
 void Benchmark_Position(void);
 void Benchmark_Begin(void);

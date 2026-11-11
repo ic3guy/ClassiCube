@@ -24,6 +24,12 @@ extern struct ChunkPartInfo* MapRenderer_PartsTranslucent;
 extern struct ChunkPartInfo* MapRenderer_PartsCutout;
 
 /* Describes a portion of the data needed for rendering a chunk. */
+#ifdef CC_BUILD_LINUX
+struct OcclusionRange {
+	int offset,count,section;
+	float minX,minY,minZ,maxX,maxY,maxZ;
+};
+#endif
 struct ChunkPartInfo {
 #if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
 	/* 1 VB per face, another VB for sprites */
@@ -33,6 +39,10 @@ struct ChunkPartInfo {
 	int offset;      /* -1 if no vertices at all */
 	int spriteCount; /* Sprite vertices count */
 	cc_uint16 counts[FACE_COUNT]; /* Counts per face */
+#ifdef CC_BUILD_LINUX
+	struct OcclusionRange* ranges;
+	int rangeCount;
+#endif
 };
 
 /* Describes data necessary for rendering a chunk. */

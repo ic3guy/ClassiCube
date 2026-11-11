@@ -401,7 +401,11 @@ void Gfx_SetVSync(cc_bool vsync) {
 	if (Gfx.Created) GLContext_SetVSync(gfx_vsync);
 }
 
-void Gfx_BeginFrame(void) { }
+void Gfx_BeginFrame(void) {
+#if defined CC_BUILD_LINUX && (CC_GFX_BACKEND == CC_GFX_BACKEND_GL1 || CC_GFX_BACKEND == CC_GFX_BACKEND_GL2)
+	chunkSubmittedVertices = 0;
+#endif
+}
 void Gfx_ClearBuffers(GfxBuffers buffers) {
 	int targets = 0;
 	if (buffers & GFX_BUFFER_COLOR) targets |= GL_COLOR_BUFFER_BIT;

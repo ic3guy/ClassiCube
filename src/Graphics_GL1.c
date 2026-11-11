@@ -85,12 +85,21 @@ static GL_SetupVBRangeFunc gfx_setupVBRangeFunc;
 /*  slower as it means 4 instead of 1 OpenGL calls (and more driver work) per draw call. */
 /* NOTE: Can't be used with the OpenGL 1.0/1.1 fallbacks, as they don't support index buffer offsets */
 static cc_bool gl_fastChunkDraw;
+#ifdef CC_BUILD_LINUX
+/* Optional job boundaries for large tile-rendering workloads; does not cull geometry. */
+static int chunkFlushVertices, chunkSubmittedVertices;
+static void (*chunkFlush)(void);
+#endif
 
 #include "_GLShared.h"
 static void GLBackend_Init(void);
 
 void Gfx_Create(void) {
 	GLContext_Create();
+#ifdef CC_BUILD_LINUX
+	chunkFlushVertices = Options_GetInt("gfx-flushverts", 0, 16777216, 0);
+	if (chunkFlushVertices) chunkFlush = (void (*)(void))GLContext_GetAddress("glFlush");
+#endif
 #ifdef CC_BUILD_GL11_FALLBACK
 	GLContext_GetAll(coreFuncs, Array_Elems(coreFuncs));
 #endif
@@ -306,6 +315,13 @@ void Gfx_BindVb_Textured(GfxResourceID vb) {
 
 void Gfx_DrawIndexedTris_T2fC4b(int verticesCount, int startVertex, DrawHints hints) {
 	cc_uint32 offset;
+#ifdef CC_BUILD_LINUX
+	if (chunkFlush && chunkSubmittedVertices && chunkSubmittedVertices + verticesCount > chunkFlushVertices) {
+		chunkFlush();
+		chunkSubmittedVertices = 0;
+	}
+	chunkSubmittedVertices += verticesCount;
+#endif
 
 	if (gl_fastChunkDraw && (startVertex + verticesCount) <= GFX_MAX_VERTICES) {
 		/* 4 vertices = 6 indices of 2 bytes each, so offset in bytes = startVertex * 3 */

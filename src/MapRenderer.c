@@ -16,6 +16,7 @@
 #include "Options.h"
 #include "Benchmark.h"
 #include "Adaptive.h"
+#include "Occlusion.h"
 
 int MapRenderer_1DUsedCount;
 struct ChunkPartInfo* MapRenderer_PartsNormal;
@@ -79,6 +80,7 @@ static void ChunkInfo_Init(struct ChunkInfo* chunk, int x, int y, int z) {
 }
 
 static CC_INLINE void ChunkInfo_Refresh(struct ChunkInfo* chunk) {
+	Occlusion_Invalidate();
 	if (chunk->allAir) return; /* do not recreate chunks completely air */
 
 	chunk->empty = false;
@@ -168,6 +170,22 @@ static void DrawPartSections(struct ChunkInfo* info, const struct ChunkPartInfo*
 	int offset = part->offset;
 	int runBeg = 0, runLen = 0, gap = 0;
 	int i, count;
+#ifdef CC_BUILD_LINUX
+	if(part->ranges) {
+		for(i=0;i<part->rangeCount;i++) {
+			const struct OcclusionRange* r=&part->ranges[i];
+			if(!(wanted&r->section) || Occlusion_HiddenRange(r)) continue;
+			if(runLen && runBeg+runLen==r->offset && runLen+r->count<=GFX_MAX_VERTICES) {
+				runLen+=r->count;
+			} else {
+				if(runLen) { DrawBatch(runLen,runBeg); Game_Vertices+=runLen; if(Benchmark_Mode) Benchmark_RecordDraw(info->centreY,runLen); }
+				runBeg=r->offset; runLen=r->count;
+			}
+		}
+		if(runLen) { DrawBatch(runLen,runBeg); Game_Vertices+=runLen; if(Benchmark_Mode) Benchmark_RecordDraw(info->centreY,runLen); }
+		return;
+	}
+#endif
 
 	for (i = 0; i <= FACE_COUNT; i++, offset += count)
 	{
@@ -182,7 +200,7 @@ static void DrawPartSections(struct ChunkInfo* info, const struct ChunkPartInfo*
 			if (runLen) {
 				DrawBatch(runLen, runBeg); Game_Vertices += runLen;
 #ifdef CC_BUILD_LINUX
-				if (Benchmark_Mode) Benchmark_Draws++;
+				if (Benchmark_Mode) Benchmark_RecordDraw(info->centreY, runLen);
 #endif
 			}
 			runBeg = offset;
@@ -193,7 +211,7 @@ static void DrawPartSections(struct ChunkInfo* info, const struct ChunkPartInfo*
 	if (runLen) {
 		DrawBatch(runLen, runBeg); Game_Vertices += runLen;
 #ifdef CC_BUILD_LINUX
-		if (Benchmark_Mode) Benchmark_Draws++;
+		if (Benchmark_Mode) Benchmark_RecordDraw(info->centreY, runLen);
 #endif
 	}
 }
@@ -417,6 +435,7 @@ void MapRenderer_RenderTranslucent(float delta) {
 *#########################################################################################################################*/
 /* Deletes vertex buffer associated with the given chunk and updates internal state */
 static void DeleteChunk(struct ChunkInfo* chunk) {
+	Occlusion_Invalidate();
 	struct ChunkPartInfo* ptr;
 	int i;
 #if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
@@ -440,6 +459,9 @@ static void DeleteChunk(struct ChunkInfo* chunk) {
 		for (i = 0; i < MapRenderer_1DUsedCount; i++, ptr += chunksCount) {
 			if (ptr->offset < 0) continue; 
 			normPartsCount[i]--;
+#ifdef CC_BUILD_LINUX
+			Mem_Free(ptr->ranges); ptr->ranges=NULL; ptr->rangeCount=0;
+#endif
 #if CC_GFX_BACKEND == CC_GFX_BACKEND_GL11
 			for (j = 0; j < CHUNKPART_MAX_VBS; j++) Gfx_DeleteVb(&ptr->vbs[j]);
 #endif
@@ -899,9 +921,25 @@ static void UpdateSortOrder(void) {
 }
 
 void MapRenderer_Update(float delta) {
+#ifdef CC_BUILD_LINUX
+	int i;
+	static cc_bool previousBypass;
+	if(previousBypass!=Benchmark_DisableOcclusion) {
+		ResetPartFlags(); previousBypass=Benchmark_DisableOcclusion;
+	}
+#endif
 	if (!mapChunks) return;
 	UpdateSortOrder();
 	UpdateChunks(delta);
+#ifdef CC_BUILD_LINUX
+	if (Benchmark_Mode) {
+		Benchmark_Pending = 0;
+		for (i = 0; i < chunksCount; i++) {
+			if (mapChunks[i].dirty && mapChunks[i].noData && !mapChunks[i].empty) Benchmark_Pending++;
+		}
+	}
+#endif
+	renderChunksCount = Occlusion_Cull(mapChunks, sortedChunks, renderChunks, renderChunksCount);
 }
 
 
@@ -965,6 +1003,7 @@ static void DeleteChunks_(void* obj) { DeleteChunks(); }
 static void Refresh_(void* obj)      { MapRenderer_Refresh(); }
 
 static void OnNewMap(void) {
+	Occlusion_Reset();
 	Game.ChunkUpdates = 0;
 	DeleteChunks();
 	ResetPartCounts();
@@ -990,6 +1029,7 @@ static void OnNewMapLoaded(void) {
 }
 
 static void OnInit(void) {
+	Occlusion_Init();
 	Event_Register_(&TextureEvents.AtlasChanged,  NULL, OnTerrainAtlasChanged);
 	Event_Register_(&WorldEvents.EnvVarChanged,   NULL, OnEnvVariableChanged);
 	Event_Register_(&BlockEvents.BlockDefChanged, NULL, OnBlockDefinitionChanged);

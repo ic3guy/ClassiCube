@@ -524,6 +524,9 @@ static void Render3DFrame(float delta, float t) {
 	MapRenderer_Update(delta);
 #ifdef CC_BUILD_LINUX
 	if (Benchmark_Mode) Benchmark_BuildUs = (int)Stopwatch_ElapsedMicroseconds(buildStart, Stopwatch_Measure());
+	/* Benchmark setup can finish meshing without a huge partial scene saturating */
+	/* the GPU and stretching initial chunk loading across the timed section. */
+	if (Benchmark_Mode && Benchmark_Preloading) return;
 #endif
 	MapRenderer_RenderNormal(delta);
 	EnvRenderer_RenderMapSides();

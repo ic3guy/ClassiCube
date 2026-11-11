@@ -1,5 +1,10 @@
 # Raspberry Pi 3: measured 60fps configuration
 
+> Historical adaptive-distance results. The current full-view requirement and
+> experiments are documented in [pi3-full-view.md](pi3-full-view.md). On the
+> full-view branch adaptive distance now requires `gfx-adaptiveview=true`;
+> setting a frame target alone no longer enables it.
+
 Follow-up to `HANDOVER.md`, 2026-11-10. Tests ran directly on `kidspi.local`.
 
 ## Result and visibility tradeoff

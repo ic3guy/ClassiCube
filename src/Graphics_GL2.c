@@ -41,6 +41,10 @@ static cc_uint16 gl_indices[GFX_MAX_INDICES];
 #define GL_INDICES
 #endif
 
+#ifdef CC_BUILD_LINUX
+static int chunkFlushVertices, chunkSubmittedVertices;
+static void (*chunkFlush)(void);
+#endif
 #include "_GLShared.h"
 static void GLBackend_Init(void);
 
@@ -51,6 +55,10 @@ static const char* const postProcess_Names[2] = { "NONE", "GRAYSCALE" };
 
 void Gfx_Create(void) {
 	GLContext_Create();
+#ifdef CC_BUILD_LINUX
+	chunkFlushVertices=Options_GetInt("gfx-flushverts",0,16777216,0);
+	if(chunkFlushVertices) chunkFlush=(void (*)(void))GLContext_GetAddress("glFlush");
+#endif
 #ifdef CC_BUILD_WIN
 	GLContext_GetAll(core_funcs, Array_Elems(core_funcs));
 #endif
@@ -729,6 +737,12 @@ void Gfx_BindVb_Textured(GfxResourceID vb) {
 }
 
 void Gfx_DrawIndexedTris_T2fC4b(int verticesCount, int startVertex, DrawHints hints) {
+#ifdef CC_BUILD_LINUX
+	if(chunkFlush && chunkSubmittedVertices && chunkSubmittedVertices+verticesCount>chunkFlushVertices) {
+		chunkFlush(); chunkSubmittedVertices=0;
+	}
+	chunkSubmittedVertices+=verticesCount;
+#endif
 	if (startVertex + verticesCount > GFX_MAX_VERTICES) {
 		GL_SetupVbTextured_Range(startVertex);
 		glDrawElements(GL_TRIANGLES, ICOUNT(verticesCount), GL_UNSIGNED_SHORT, NULL);

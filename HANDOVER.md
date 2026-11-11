@@ -1,5 +1,9 @@
 # Handover: ClassiCube at 60fps on a Raspberry Pi 3
 
+> Current requirement: **preserve the full 512-block view** while working toward
+> 60 FPS in Normal and Huge worlds. Adaptive fog/distance is no longer an accepted
+> solution. See [full-view experiments and validation](doc/pi3-full-view.md).
+
 > Follow-up, 2026-11-10: direct Pi testing now supports paced 60fps in Normal and Huge worlds at 854x480 with adaptive view distance. See [measured results and settings](doc/pi3-performance.md). The access constraints and unresolved status below describe the earlier session.
 
 **Written:** 2026-11-10
