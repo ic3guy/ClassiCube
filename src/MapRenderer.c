@@ -15,6 +15,7 @@
 #include "World.h"
 #include "Options.h"
 #include "Benchmark.h"
+#include "Adaptive.h"
 
 int MapRenderer_1DUsedCount;
 struct ChunkPartInfo* MapRenderer_PartsNormal;
@@ -660,6 +661,54 @@ static int renderDistSquared;
 /* Chunks past this distance are automatically unloaded */
 static int buildDistSquared;
 
+/* Maximum time (in microseconds) that should be spent building chunks in a frame while the camera is moving */
+static int buildBudgetMoving;
+/* Maximum time (in microseconds) that should be spent building chunks in the current frame */
+static int buildBudget;
+/* Time at which chunk building for the current frame started */
+static cc_uint64 buildStart;
+/* Whether the time for building chunks in the current frame has been used up */
+static cc_bool buildBudgetSpent;
+
+/* Chunks that need building but cannot currently be seen are remembered in this list, */
+/*  and are only built after all the visible chunks, if there is still time left over */
+#define MAX_DEFERRED_CHUNKS 32
+static struct ChunkInfo* deferredChunks[MAX_DEFERRED_CHUNKS];
+static int deferredCount;
+
+/* Whether the given chunk can be built in the current frame */
+static cc_bool CanBuildChunk(struct ChunkInfo* chunk, int chunkUpdates) {
+	int elapsed;
+	if (chunkUpdates >= chunksTarget) return false;
+	/* Chunks that already have a mesh are being rebuilt because their blocks changed, */
+	/*  so are rebuilt straight away to avoid e.g. brief holes at the edges of chunks */
+	if (!chunk->noData) return true;
+
+	if (buildBudgetSpent) return false;
+	/* Always build at least one chunk per frame, so that progress is always made */
+	if (!chunkUpdates) return true;
+
+	elapsed = (int)Stopwatch_ElapsedMicroseconds(buildStart, Stopwatch_Measure());
+	if (elapsed < buildBudget) return true;
+
+	buildBudgetSpent = true;
+	return false;
+}
+
+static void BuildDeferredChunks(int* chunkUpdates) {
+	struct ChunkInfo* chunk;
+	int i;
+
+	for (i = 0; i < deferredCount; i++)
+	{
+		chunk = deferredChunks[i];
+		if (!CanBuildChunk(chunk, *chunkUpdates)) continue;
+
+		DeleteChunk(chunk);
+		BuildChunk(chunk, chunkUpdates);
+	}
+}
+
 static int AdjustDist(int dist) {
 	if (dist < CHUNK_SIZE) dist = CHUNK_SIZE;
 	dist = Utils_AdjViewDist(dist);
@@ -668,6 +717,7 @@ static int AdjustDist(int dist) {
 
 static void CalcViewDists(void) {
 	buildDistSquared  = AdjustDist(Game_UserViewDistance);
+	if (Adaptive_MaxDistance) buildDistSquared = AdjustDist(min(Game_UserViewDistance, Game_ViewDistance + 32));
 	renderDistSquared = AdjustDist(Game_ViewDistance);
 }
 
@@ -689,11 +739,6 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
 			DeleteChunk(chunk); continue;
 		}
 
-		if (chunk->dirty && distSqr <= buildDistSqr && *chunkUpdates < chunksTarget) {
-			DeleteChunk(chunk);
-			BuildChunk(chunk, chunkUpdates);
-		}
-
 		if (distSqr > renderDistSqr) {
 			chunk->visible  = false;
 		} else {
@@ -702,8 +747,20 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
 			chunk->skipClip = Gfx_CanSphereSkipClipping(chunk->centreX, chunk->centreY, chunk->centreZ, 14);
 		}
 
+		if (chunk->dirty && distSqr <= buildDistSqr) {
+			if (!chunk->visible) {
+				/* Chunks that cannot be seen are only built if there is time left over */
+				if (deferredCount < MAX_DEFERRED_CHUNKS) deferredChunks[deferredCount++] = chunk;
+			} else if (CanBuildChunk(chunk, *chunkUpdates)) {
+				DeleteChunk(chunk);
+				BuildChunk(chunk, chunkUpdates);
+			}
+		}
+
 		if (chunk->visible && !chunk->empty) { renderChunks[j] = chunk; j++; }
 	}
+
+	BuildDeferredChunks(chunkUpdates);
 	return j;
 }
 
@@ -725,24 +782,29 @@ static int UpdateChunksStill(int* chunkUpdates) {
 			DeleteChunk(chunk); continue;
 		}
 
-		if (chunk->dirty && distSqr <= buildDistSqr && *chunkUpdates < chunksTarget) {
-			DeleteChunk(chunk);
-			BuildChunk(chunk, chunkUpdates);
+		if (chunk->dirty && distSqr <= buildDistSqr) {
+			if (!chunk->visible) {
+				/* Chunks that cannot be seen are only built if there is time left over */
+				if (deferredCount < MAX_DEFERRED_CHUNKS) deferredChunks[deferredCount++] = chunk;
+			} else if (CanBuildChunk(chunk, *chunkUpdates)) {
+				DeleteChunk(chunk);
+				BuildChunk(chunk, chunkUpdates);
 
-			/* only need to update the visibility of chunks in range. */
-			if (distSqr > renderDistSqr) {
-				chunk->visible  = false;
-			} else {
-				res = Frustum_TestSphere(chunk->centreX, chunk->centreY, chunk->centreZ, 14); /* 14 ~ sqrt(3 * 8^2) */
-				chunk->visible  = res != FRUSTUM_OUTSIDE;
-				chunk->skipClip = Gfx_CanSphereSkipClipping(chunk->centreX, chunk->centreY, chunk->centreZ, 14);
+				/* only need to update the visibility of chunks in range. */
+				if (distSqr > renderDistSqr) {
+					chunk->visible  = false;
+				} else {
+					res = Frustum_TestSphere(chunk->centreX, chunk->centreY, chunk->centreZ, 14); /* 14 ~ sqrt(3 * 8^2) */
+					chunk->visible  = res != FRUSTUM_OUTSIDE;
+					chunk->skipClip = Gfx_CanSphereSkipClipping(chunk->centreX, chunk->centreY, chunk->centreZ, 14);
+				}
 			}
-
-			if (chunk->visible && !chunk->empty) { renderChunks[j] = chunk; j++; }
-		} else if (chunk->visible) {
-			renderChunks[j] = chunk; j++;
 		}
+
+		if (chunk->visible && !chunk->empty) { renderChunks[j] = chunk; j++; }
 	}
+
+	BuildDeferredChunks(chunkUpdates);
 	return j;
 }
 
@@ -758,6 +820,13 @@ static void UpdateChunks(float delta) {
 	p = Entities.CurPlayer;
 	samePos = Vec3_Equals(&Camera.CurrentPos, &lastCamPos)
 		&& p->Base.Pitch == lastPitch && p->Base.Yaw == lastYaw;
+
+	/* Stuttering due to building chunks is far less noticeable when the camera is not moving, */
+	/*  so allow more time for building chunks then (so the world still loads reasonably quickly) */
+	buildBudget      = samePos ? buildBudgetMoving * 4 : buildBudgetMoving;
+	buildStart       = Stopwatch_Measure();
+	buildBudgetSpent = false;
+	deferredCount    = 0;
 
 	renderChunksCount = samePos ?
 		UpdateChunksStill(&chunkUpdates) :
@@ -937,6 +1006,7 @@ static void OnInit(void) {
 	/* Options for comparing performance with and without these optimisations */
 	opaqueNoAlphaTest = Options_GetBool(OPT_OPAQUE_NO_ALPHATEST, true);
 	mergeGap          = Options_GetInt(OPT_DRAW_MERGE_GAP, 0, GFX_MAX_VERTICES, 64);
+	buildBudgetMoving = Options_GetInt(OPT_CHUNK_BUILD_MS, 0, 100, 3) * 1000;
 	CalcViewDists();
 }
 

@@ -1,5 +1,7 @@
 # Handover: ClassiCube at 60fps on a Raspberry Pi 3
 
+> Follow-up, 2026-11-10: direct Pi testing now supports paced 60fps in Normal and Huge worlds at 854x480 with adaptive view distance. See [measured results and settings](doc/pi3-performance.md). The access constraints and unresolved status below describe the earlier session.
+
 **Written:** 2026-11-10
 **From:** Windows work PC, repo at `C:\source\classiCube` (Cowork / Claude Code session)
 **Status:** In progress. Three optimisation/convenience commits shipped to the user's fork and running on the Pi. Classic (256) world is NOT at 60fps and is believed out of reach with cheap changes; the user has accepted playing a Small (128) world, which is smooth. A plan for the Huge (512) world exists but is not started.

@@ -42,6 +42,7 @@
 #include "Formats.h"
 #include "EntityRenderers.h"
 #include "Benchmark.h"
+#include "Adaptive.h"
 
 struct _GameData Game;
 static cc_uint64 frameStart;
@@ -55,6 +56,9 @@ int Game_MaxViewDistance  = DEFAULT_MAX_VIEWDIST;
 int     Game_FpsLimit, Game_Vertices;
 cc_bool Game_SimpleArmsAnim;
 static float gfx_minFrameMs;
+static cc_uint64 gfx_paceEpoch;
+static float gfx_paceTarget;
+static int gfx_paceWaitUs;
 static cc_bool autoPause;
 
 cc_bool Game_ClassicMode, Game_ClassicHacks;
@@ -191,6 +195,7 @@ cc_bool Game_ReduceVRAM(void) {
 
 void Game_SetViewDistance(int distance) {
 	distance = min(distance, Game_MaxViewDistance);
+	if (Adaptive_MaxDistance) distance = min(distance, Adaptive_MaxDistance);
 	if (distance == Game_ViewDistance) return;
 	Game_ViewDistance = distance;
 
@@ -485,13 +490,16 @@ void Game_SetMinFrameTime(float frameTimeMS) {
 #else
 void Game_SetMinFrameTime(float frameTimeMS) {
 	gfx_minFrameMs = frameTimeMS;
+	gfx_paceEpoch = 0;
 }
 #endif
 
 static void Render3DFrame(float delta, float t) {
 	struct Matrix mvp;
 	Vec3 pos;
+#ifdef CC_BUILD_LINUX
 	cc_uint64 buildStart;
+#endif
 
 	Camera.Active->GetView(&Gfx.View);
 	/*Gfx_LoadMatrix(MATRIX_PROJ, &Gfx.Projection);
@@ -510,7 +518,9 @@ static void Render3DFrame(float delta, float t) {
 
 	Particles_Render(t);
 
+#ifdef CC_BUILD_LINUX
 	buildStart = Stopwatch_Measure();
+#endif
 	MapRenderer_Update(delta);
 #ifdef CC_BUILD_LINUX
 	if (Benchmark_Mode) Benchmark_BuildUs = (int)Stopwatch_ElapsedMicroseconds(buildStart, Stopwatch_Measure());
@@ -629,6 +639,7 @@ static void LimitFPS(void) {
 	/* Can't use Thread_Sleep on the web. (spinwaits instead of sleeping) */
 	/* Instead the web browser manages the frame timing */
 }
+static void PaceAdaptiveFPS(void) { }
 #else
 static float gfx_targetTime, gfx_actualTime;
 
@@ -664,6 +675,32 @@ static void LimitFPS(void) {
 
 	/* reset accumulated time to avoid excessive FPS drift */
 	if (gfx_targetTime >= 1000) { gfx_actualTime = 0; gfx_targetTime = 0; }
+}
+
+/* Adaptive mode paces swap requests, rather than the start of CPU work. */
+/* A wall-clock deadline includes time spent swapping and avoids compensating */
+/* for a missed frame with a burst of immediately submitted catch-up frames. */
+static void PaceAdaptiveFPS(void) {
+	cc_uint64 elapsedUs;
+	float elapsedMs, remaining;
+	if (!gfx_paceEpoch) {
+		gfx_paceEpoch  = frameStart;
+		gfx_paceTarget = gfx_minFrameMs;
+	}
+	elapsedUs = Stopwatch_ElapsedMicroseconds(gfx_paceEpoch, Stopwatch_Measure());
+	/* Restart after suspension, and keep the floating-point timeline short. */
+	if (elapsedUs > 60000000) {
+		gfx_paceTarget = elapsedUs < 120000000 ? gfx_paceTarget - (int)elapsedUs / 1000.0f : gfx_minFrameMs;
+		gfx_paceEpoch  = Stopwatch_Measure();
+		elapsedUs = 0;
+	}
+	elapsedMs = (int)elapsedUs / 1000.0f;
+	remaining = gfx_paceTarget - elapsedMs;
+	if (remaining > 0.0f) Thread_Sleep((int)(remaining + 0.5f));
+	elapsedUs = Stopwatch_ElapsedMicroseconds(gfx_paceEpoch, Stopwatch_Measure());
+	elapsedMs = (int)elapsedUs / 1000.0f;
+	gfx_paceTarget += gfx_minFrameMs;
+	if (elapsedMs > gfx_paceTarget) gfx_paceTarget = elapsedMs + gfx_minFrameMs;
 }
 #endif
 
@@ -739,7 +776,10 @@ int Game_MapState(int deviceIndex) {
 void Game_RenderFrame(void) {
 	double deltaD;
 	float t, delta;
+	cc_uint64 paceStart;
+#ifdef CC_BUILD_LINUX
 	cc_uint64 benchDraw, benchSubmit;
+#endif
 
 	cc_uint64 render  = Stopwatch_Measure();
 	cc_uint64 elapsed = Stopwatch_ElapsedMicroseconds(frameStart, render);
@@ -769,6 +809,7 @@ void Game_RenderFrame(void) {
 	}
 
 	Gfx_BeginFrame();
+	gfx_paceWaitUs = 0;
 	Benchmark_Begin();
 	Gfx_BindIb(Gfx.DefaultIb);
 	Game.Time += deltaD;
@@ -810,7 +851,9 @@ void Game_RenderFrame(void) {
 	/* TODO: Not calling Gfx_EndFrame doesn't work with Direct3D9 */
 	if (Window_Main.Inactive) return;
 #endif
+#ifdef CC_BUILD_LINUX
 	benchDraw = Stopwatch_Measure();
+#endif
 	Gfx_ClearBuffers(GFX_BUFFER_COLOR | GFX_BUFFER_DEPTH);
 	
 #ifdef CC_BUILD_SPLITSCREEN
@@ -838,10 +881,22 @@ void Game_RenderFrame(void) {
 #endif
 
 	if (Game_ScreenshotRequested) Game_TakeScreenshot();
+#ifdef CC_BUILD_LINUX
 	benchSubmit = Stopwatch_Measure();
+#endif
+	Benchmark_SyncGpu();
+	if (gfx_minFrameMs != 0.0f && Adaptive_MaxDistance) {
+		paceStart = Stopwatch_Measure();
+		PaceAdaptiveFPS();
+		gfx_paceWaitUs = (int)Stopwatch_ElapsedMicroseconds(paceStart, Stopwatch_Measure());
+#ifdef CC_BUILD_LINUX
+		if (Benchmark_Mode) Benchmark_PacingUs = gfx_paceWaitUs;
+#endif
+	}
 	Gfx_EndFrame();
 	Benchmark_End(render, benchDraw, benchSubmit);
-	if (gfx_minFrameMs != 0.0f) LimitFPS();
+	Adaptive_Update(render, gfx_paceWaitUs);
+	if (gfx_minFrameMs != 0.0f && !Adaptive_MaxDistance) LimitFPS();
 }
 
 void Game_Free(void) {
@@ -900,6 +955,7 @@ void Game_Setup(void) {
 	Game.CurrentState = 0;
 
 	Game_Load();
+	Adaptive_Init();
 	Benchmark_Init();
 	/* Optionally start the game in fullscreen (same as pressing the fullscreen key) */
 	if (Options_GetBool(OPT_WINDOW_FULLSCREEN, false)) Game_ToggleFullscreen();
