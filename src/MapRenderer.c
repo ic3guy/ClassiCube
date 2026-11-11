@@ -14,6 +14,7 @@
 #include "Utils.h"
 #include "World.h"
 #include "Options.h"
+#include "Benchmark.h"
 
 int MapRenderer_1DUsedCount;
 struct ChunkPartInfo* MapRenderer_PartsNormal;
@@ -177,13 +178,23 @@ static void DrawPartSections(struct ChunkInfo* info, const struct ChunkPartInfo*
 			/* Close enough to the previous wanted section to share its draw call */
 			runLen += gap + count;
 		} else {
-			if (runLen) { DrawBatch(runLen, runBeg); Game_Vertices += runLen; }
+			if (runLen) {
+				DrawBatch(runLen, runBeg); Game_Vertices += runLen;
+#ifdef CC_BUILD_LINUX
+				if (Benchmark_Mode) Benchmark_Draws++;
+#endif
+			}
 			runBeg = offset;
 			runLen = count;
 		}
 		gap = 0;
 	}
-	if (runLen) { DrawBatch(runLen, runBeg); Game_Vertices += runLen; }
+	if (runLen) {
+		DrawBatch(runLen, runBeg); Game_Vertices += runLen;
+#ifdef CC_BUILD_LINUX
+		if (Benchmark_Mode) Benchmark_Draws++;
+#endif
+	}
 }
 #endif
 

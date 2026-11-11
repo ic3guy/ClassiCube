@@ -41,6 +41,7 @@
 #include "SystemFonts.h"
 #include "Formats.h"
 #include "EntityRenderers.h"
+#include "Benchmark.h"
 
 struct _GameData Game;
 static cc_uint64 frameStart;
@@ -490,6 +491,7 @@ void Game_SetMinFrameTime(float frameTimeMS) {
 static void Render3DFrame(float delta, float t) {
 	struct Matrix mvp;
 	Vec3 pos;
+	cc_uint64 buildStart;
 
 	Camera.Active->GetView(&Gfx.View);
 	/*Gfx_LoadMatrix(MATRIX_PROJ, &Gfx.Projection);
@@ -508,7 +510,11 @@ static void Render3DFrame(float delta, float t) {
 
 	Particles_Render(t);
 
+	buildStart = Stopwatch_Measure();
 	MapRenderer_Update(delta);
+#ifdef CC_BUILD_LINUX
+	if (Benchmark_Mode) Benchmark_BuildUs = (int)Stopwatch_ElapsedMicroseconds(buildStart, Stopwatch_Measure());
+#endif
 	MapRenderer_RenderNormal(delta);
 	EnvRenderer_RenderMapSides();
 
@@ -733,6 +739,7 @@ int Game_MapState(int deviceIndex) {
 void Game_RenderFrame(void) {
 	double deltaD;
 	float t, delta;
+	cc_uint64 benchDraw, benchSubmit;
 
 	cc_uint64 render  = Stopwatch_Measure();
 	cc_uint64 elapsed = Stopwatch_ElapsedMicroseconds(frameStart, render);
@@ -762,6 +769,7 @@ void Game_RenderFrame(void) {
 	}
 
 	Gfx_BeginFrame();
+	Benchmark_Begin();
 	Gfx_BindIb(Gfx.DefaultIb);
 	Game.Time += deltaD;
 	Game_Vertices = 0;
@@ -789,6 +797,7 @@ void Game_RenderFrame(void) {
 	}
 
 	PerformScheduledTasks(delta);
+	Benchmark_Position();
 	t = (float)(Game_Tasks.entities.accumulator / Game_Tasks.entities.interval);
 	LocalPlayer_SetInterpPosition(Entities.CurPlayer, t);
 
@@ -801,6 +810,7 @@ void Game_RenderFrame(void) {
 	/* TODO: Not calling Gfx_EndFrame doesn't work with Direct3D9 */
 	if (Window_Main.Inactive) return;
 #endif
+	benchDraw = Stopwatch_Measure();
 	Gfx_ClearBuffers(GFX_BUFFER_COLOR | GFX_BUFFER_DEPTH);
 	
 #ifdef CC_BUILD_SPLITSCREEN
@@ -828,7 +838,9 @@ void Game_RenderFrame(void) {
 #endif
 
 	if (Game_ScreenshotRequested) Game_TakeScreenshot();
+	benchSubmit = Stopwatch_Measure();
 	Gfx_EndFrame();
+	Benchmark_End(render, benchDraw, benchSubmit);
 	if (gfx_minFrameMs != 0.0f) LimitFPS();
 }
 
@@ -888,6 +900,7 @@ void Game_Setup(void) {
 	Game.CurrentState = 0;
 
 	Game_Load();
+	Benchmark_Init();
 	/* Optionally start the game in fullscreen (same as pressing the fullscreen key) */
 	if (Options_GetBool(OPT_WINDOW_FULLSCREEN, false)) Game_ToggleFullscreen();
 

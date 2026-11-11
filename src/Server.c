@@ -25,6 +25,7 @@
 #include "Input.h"
 #include "Errors.h"
 #include "Options.h"
+#include "Benchmark.h"
 
 static char nameBuffer[STRING_SIZE];
 static char motdBuffer[STRING_SIZE];
@@ -155,6 +156,7 @@ static void SPConnection_BeginConnect(void) {
 
 	Random_SeedFromCurrentTime(&rnd);
 	seed = Random_Next(&rnd, Int32_MaxValue);
+	seed = Benchmark_Seed(seed);
 
 	Gen_Start(gen, seed, horSize, verSize, horSize);
 }
